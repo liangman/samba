@@ -325,12 +325,9 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 		return true;
 	}
 
-	/* make sure we free this if allocated previously before replacing */
-	LDB_FREE(dn->components);
-	dn->comp_num = 0;
-
 	LDB_FREE(dn->ext_components);
 	dn->ext_comp_num = 0;
+	dn->comp_num = 0;
 
 	/* in the common case we have 3 or more components */
 	/* make sure all components are zeroed, other functions depend on it */
@@ -358,9 +355,6 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 					p++;
 					ex_name = d;
 					in_ex_name = true;
-					continue;
-				} else if (p[0] == '\0') {
-					p++;
 					continue;
 				} else {
 					in_extended = false;
@@ -472,12 +466,6 @@ static bool ldb_dn_explode(struct ldb_dn *dn)
 				/* valid only if we are at the end */
 				trim = true;
 				continue;
-			}
-
-			if (trim && (*p != '=')) {
-				/* spaces/tabs are not allowed */
-				ldb_dn_mark_invalid(dn);
-				goto failed;
 			}
 
 			if (*p == '=') {

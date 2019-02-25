@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Originally based on ./sam.py
 from __future__ import print_function
@@ -138,7 +138,7 @@ class LATests(samba.tests.TestCase):
             return
 
         try:
-            results = list([x[attr] for x in res][0])
+            results = [str(x) for x in res[0][attr]]
         except KeyError:
             self.fail("missing attr '%s' on %s" % (attr, obj))
 

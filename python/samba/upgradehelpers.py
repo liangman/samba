@@ -33,9 +33,9 @@ from samba import Ldb, version, ntacls
 from ldb import SCOPE_SUBTREE, SCOPE_ONELEVEL, SCOPE_BASE
 import ldb
 from samba.provision import (provision_paths_from_lp,
-                             getpolicypath, set_gpos_acl, create_gpo_struct,
+                             getpolicypath, create_gpo_struct,
                              provision, ProvisioningError,
-                             setsysvolacl, secretsdb_self_join)
+                             secretsdb_self_join)
 from samba.provision.common import FILL_FULL
 from samba.dcerpc import xattr, drsblobs, security
 from samba.dcerpc.misc import SEC_CHAN_BDC
@@ -487,7 +487,6 @@ def increment_calculated_keyversion_number(samdb, rootdn, hashDns):
                          scope=SCOPE_SUBTREE, attrs=["msDs-KeyVersionNumber"],
                          controls=["search_options:1:2"])
     done = 0
-    hashDone = {}
     if len(entry) == 0:
         raise ProvisioningError("Unable to find msDs-KeyVersionNumber")
     else:
@@ -815,14 +814,15 @@ def print_provision_ranges(dic, limit_print, dest, samdb_path, invocationid):
                                                                obj["max"], id)
 
     if ldif != "":
-        file = tempfile.mktemp(dir=dest, prefix="usnprov", suffix=".ldif")
+        fd, file = tempfile.mkstemp(dir=dest, prefix="usnprov", suffix=".ldif")
         print()
         print("To track the USNs modified/created by provision and upgrade proivsion,")
         print(" the following ranges are proposed to be added to your provision sam.ldb: \n%s" % ldif)
         print("We recommend to review them, and if it's correct to integrate the following ldif: %s in your sam.ldb" % file)
         print("You can load this file like this: ldbadd -H %s %s\n" %(str(samdb_path), file))
         ldif = "dn: @PROVISION\nprovisionnerID: %s\n%s" % (invocationid, ldif)
-        open(file, 'w').write(ldif)
+        os.write(fd, ldif)
+        os.close(fd)
 
 
 def int64range2str(value):

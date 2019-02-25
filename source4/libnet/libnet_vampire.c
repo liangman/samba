@@ -337,7 +337,7 @@ static WERROR libnet_vampire_cb_apply_schema(struct libnet_vampire_cb_state *s,
 			DEBUG(0,("Failed to attach schema from local provision using remote prefixMap."));
 			return WERR_INTERNAL_ERROR;
 		}
-		talloc_free(schema_ldb);
+		talloc_unlink(s, schema_ldb);
 	}
 
 	cycle_before_switching = lpcfg_parm_long(s->lp_ctx, NULL,
@@ -779,6 +779,12 @@ WERROR libnet_vampire_cb_store_chunk(void *private_data,
 	if (!W_ERROR_IS_OK(status)) {
 		DEBUG(0,("Failed to commit objects: %s\n", win_errstr(status)));
 		return status;
+	}
+
+	/* reset debug counters once we've finished replicating the partition */
+	if (!c->partition->more_data) {
+		s->total_objects = 0;
+		s->total_links = 0;
 	}
 
 	talloc_free(s_dsa);

@@ -3,7 +3,7 @@
 bld.SAMBA_SUBSYSTEM('DCERPC_SHARE',
 	source='common/share_info.c',
 	autoproto='common/share.h',
-	deps='ldb',
+	deps='ldb share',
 	enabled=bld.CONFIG_SET('WITH_NTVFS_FILESERVER'),
 	)
 
@@ -15,16 +15,16 @@ bld.SAMBA_SUBSYSTEM('DCERPC_SID_HELPER',
 	)
 
 bld.SAMBA_SUBSYSTEM('DCERPC_COMMON',
-	source='common/server_info.c common/forward.c common/reply.c dcesrv_auth.c common/loadparm.c',
+	source='common/server_info.c common/forward.c common/loadparm.c',
 	autoproto='common/proto.h',
-	deps='ldb DCERPC_SHARE DCERPC_SID_HELPER samba_server_gensec',
+	deps='ldb DCERPC_SHARE DCERPC_SID_HELPER',
 	enabled=bld.AD_DC_BUILD_IS_ENABLED()
 	)
 
 bld.SAMBA_LIBRARY('dcerpc_server',
-	source='dcerpc_server.c dcesrv_mgmt.c handles.c',
+	source='dcerpc_server.c dcesrv_auth.c dcesrv_mgmt.c handles.c common/reply.c',
 	pc_files='dcerpc_server.pc',
-	deps='LIBCLI_AUTH ndr samba_server_gensec dcerpc_remote service auth',
+	deps='LIBCLI_AUTH ndr samba_server_gensec service auth',
 	public_deps='dcerpc',
 	autoproto='dcerpc_server_proto.h',
 	public_headers='dcerpc_server.h',
@@ -163,7 +163,7 @@ bld.SAMBA_MODULE('dcerpc_dnsserver',
     source='dnsserver/dcerpc_dnsserver.c dnsserver/dnsutils.c dnsserver/dnsdata.c dnsserver/dnsdb.c',
     subsystem='dcerpc_server',
     init_function='dcerpc_server_dnsserver_init',
-    deps='DCERPC_COMMON dnsserver_common'
+    deps='DCERPC_COMMON dnsserver_common netif'
     )
 
 
@@ -176,3 +176,16 @@ bld.SAMBA_MODULE('service_dcerpc',
 	deps='dcerpc_server'
 	)
 
+if bld.CONFIG_GET('ENABLE_SELFTEST'):
+    bld.SAMBA_BINARY(
+        'test_rpc_dns_server_dnsutils',
+        source='tests/rpc_dns_server_dnsutils_test.c',
+        deps='''
+            dnsserver_common
+            dcerpc_server
+            cmocka
+            talloc
+        ''',
+        install=False,
+        enabled=bld.AD_DC_BUILD_IS_ENABLED()
+    )

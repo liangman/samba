@@ -26,18 +26,15 @@
 """Functions for setting up a Samba configuration (LDB and LDAP backends)."""
 
 from samba.compat import urllib_quote
-from base64 import b64encode
 import errno
 import ldb
 import os
 import sys
-import uuid
 import time
 import shutil
 import subprocess
-import urllib
 
-from ldb import SCOPE_BASE, SCOPE_ONELEVEL, LdbError, timestring
+from ldb import SCOPE_BASE, SCOPE_ONELEVEL, LdbError
 
 from samba import Ldb, read_and_sub_file, setup_file
 from samba.credentials import Credentials, DONT_USE_KERBEROS
@@ -132,26 +129,6 @@ class LDBBackend(ProvisionBackend):
 
     def post_setup(self):
         pass
-
-
-class ExistingBackend(ProvisionBackend):
-
-    def __init__(self, backend_type, paths=None, lp=None,
-                 names=None, logger=None, ldapi_uri=None):
-
-        super(ExistingBackend, self).__init__(backend_type=backend_type,
-                                              paths=paths, lp=lp,
-                                              names=names, logger=logger,
-                                              ldap_backend_forced_uri=ldapi_uri)
-
-    def init(self):
-        # Check to see that this 'existing' LDAP backend in fact exists
-        ldapi_db = Ldb(self.ldapi_uri)
-        ldapi_db.search(base="", scope=SCOPE_BASE,
-                        expression="(objectClass=OpenLDAProotDSE)")
-
-        # For now, assume existing backends at least emulate OpenLDAP
-        self.ldap_backend_type = "openldap"
 
 
 class LDAPBackend(ProvisionBackend):
@@ -382,7 +359,7 @@ class OpenLDAPBackend(LDAPBackend):
             base=self.names.schemadn, scope=SCOPE_ONELEVEL, attrs=attrs)
         index_config = ""
         for i in range(0, len(res)):
-            index_attr = res[i]["lDAPDisplayName"][0]
+            index_attr = str(res[i]["lDAPDisplayName"][0])
             if index_attr == "objectGUID":
                 index_attr = "entryUUID"
 
@@ -403,7 +380,7 @@ class OpenLDAPBackend(LDAPBackend):
             # For now, make these equal
             mmr_pass = self.ldapadminpass
 
-            url_list = filter(None, self.ol_mmr_urls.split(','))
+            url_list = list(filter(None, self.ol_mmr_urls.split(',')))
             for url in url_list:
                 self.logger.info("Using LDAP-URL: " + url)
             if len(url_list) == 1:
@@ -556,8 +533,9 @@ class OpenLDAPBackend(LDAPBackend):
             if self.ol_mmr_urls is None:
                 server_port_string = "ldap://0.0.0.0:%d" % self.ldap_backend_extra_port
             else:
-                server_port_string = "ldap://%s.%s:%d" (self.names.hostname,
-                                                        self.names.dnsdomain, self.ldap_backend_extra_port)
+                server_port_string = "ldap://%s.%s:%d" % (self.names.hostname,
+                                                          self.names.dnsdomain,
+                                                          self.ldap_backend_extra_port)
         else:
             server_port_string = ""
 
@@ -572,7 +550,7 @@ class OpenLDAPBackend(LDAPBackend):
 
         self.slapd_provision_command.extend([self.ldap_uri, "-d0"])
         uris = self.ldap_uri
-        if server_port_string is not "":
+        if server_port_string != "":
             uris = uris + " " + server_port_string
 
         self.slapd_command.append(uris)
@@ -745,7 +723,7 @@ class FDSBackend(LDAPBackend):
             base=self.names.schemadn, scope=SCOPE_ONELEVEL, attrs=attrs)
 
         for i in range(0, len(res)):
-            attr = res[i]["lDAPDisplayName"][0]
+            attr = str(res[i]["lDAPDisplayName"][0])
 
             if attr == "objectGUID":
                 attr = "nsUniqueId"
@@ -840,5 +818,5 @@ class FDSBackend(LDAPBackend):
                          self.names.schemadn):
             m.dn = ldb.Dn(ldapi_db, dnstring)
             ldapi_db.modify(m)
-        return LDAPBackendResult(self.credentials, self.slapd_command_escaped,
+        return LDAPBackendResult(self.slapd_command_escaped,
                                  self.ldapdir)

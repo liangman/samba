@@ -19,7 +19,7 @@ EOF
 
 set -e
 
-ctdb_test_init "$@"
+ctdb_test_init
 
 cluster_is_healthy
 
@@ -27,9 +27,6 @@ if [ -z "$TEST_LOCAL_DAEMONS" ] ; then
 	echo "SKIPPING this test - only runs against local daemons"
 	exit 0
 fi
-
-# Reset configuration
-ctdb_restart_when_done
 
 # This is overkill but it at least provides a valid test node
 select_test_node_and_ips
@@ -61,9 +58,21 @@ wait_until 60 onnode $test_node test -s "$debug_output"
 
 echo "Checking output of hung script debugging..."
 try_command_on_node -v $test_node cat "$debug_output"
+hung_script_output="$out"
+
+# Can we actually read kernel stacks
+if try_command_on_node $test_node "cat /proc/$$/stack >/dev/null 2>&1" ; then
+	stackpat='
+---- Stack trace of interesting process [0-9]*\\[sleep\\] ----
+[<[0-9a-f]*>] .*sleep+.*
+'
+else
+	stackpat=''
+fi
 
 while IFS="" read pattern ; do
-    if grep -- "^${pattern}\$" <<<"$out" >/dev/null ; then
+    [ -n "$pattern" ] || continue
+    if grep -- "^${pattern}\$" <<<"$hung_script_output" >/dev/null ; then
 	printf 'GOOD: output contains "%s"\n' "$pattern"
     else
 	printf 'BAD: output does not contain "%s"\n' "$pattern"
@@ -75,8 +84,7 @@ done <<EOF
 pstree -p -a .*:
 00\\\\.test\\\\.script,.*
  *\`-sleep,.*
----- Stack trace of interesting process [0-9]*\\\\[sleep\\\\] ----
-[<[0-9a-f]*>] .*sleep+.*
+${stackpat}
 ---- ctdb scriptstatus monitor: ----
 00\\.test *TIMEDOUT.*
  *OUTPUT: Sleeping for [0-9]* seconds\\\\.\\\\.\\\\.

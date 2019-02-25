@@ -69,8 +69,8 @@ def remove_sysvol_references(samdb, logger, dc_name):
         # to add a base and add an arbitrary RDN.
         dn = ldb.Dn(samdb, s)
         if dn.add_base(samdb.get_default_basedn()) == False:
-            raise DemoteException("Failed constructing DN %s by adding base" %
-                                  (dn, samdb.get_default_basedn()))
+            raise DemoteException("Failed constructing DN %s by adding base %s"
+                                  % (dn, samdb.get_default_basedn()))
         if dn.add_child("CN=X") == False:
             raise DemoteException("Failed constructing DN %s by adding child "
                                   "CN=X (soon to be CN=%s)" % (dn, dc_name))
@@ -229,15 +229,15 @@ def offline_remove_server(samdb, logger,
                         scope=ldb.SCOPE_BASE,
                         expression="(objectClass=server)")
     msg = msgs[0]
-    dc_name = str(msgs[0]["cn"][0])
+    dc_name = str(msg["cn"][0])
 
     try:
-        computer_dn = ldb.Dn(samdb, msgs[0]["serverReference"][0].decode('utf8'))
+        computer_dn = ldb.Dn(samdb, msg["serverReference"][0].decode('utf8'))
     except KeyError:
         computer_dn = None
 
     try:
-        dnsHostName = str(msgs[0]["dnsHostName"][0])
+        dnsHostName = str(msg["dnsHostName"][0])
     except KeyError:
         dnsHostName = None
 
@@ -267,8 +267,8 @@ def offline_remove_server(samdb, logger,
             logger.info("Removing computer account: %s (and any child objects)" % computer_dn)
             samdb.delete(computer_dn, ["tree_delete:0"])
 
-        if "dnsHostName" in msgs[0]:
-            dnsHostName = str(msgs[0]["dnsHostName"][0])
+        if "dnsHostName" in msg:
+            dnsHostName = str(msg["dnsHostName"][0])
 
     if remove_dns_account:
         res = samdb.search(expression="(&(objectclass=user)(cn=dns-%s)(servicePrincipalName=DNS/%s))" %
@@ -394,8 +394,8 @@ def remove_dc(samdb, logger, dc_name):
         except LdbError as e3:
             (enum, estr) = e3.args
             raise DemoteException("Failure checking if %s is an server "
-                                  "object in %s: "
-                                  % (dc_name, samdb.domain_dns_name()), estr)
+                                  "object in %s: %s"
+                                  % (dc_name, samdb.domain_dns_name(), estr))
 
         if (len(server_msgs) == 0):
             samdb.transaction_cancel()
@@ -418,8 +418,9 @@ def remove_dc(samdb, logger, dc_name):
             pass
         else:
             samdb.transaction_cancel()
-            raise DemoteException("Failure checking if %s is an NTDS DSA in %s: "
-                                  % (ntds_dn, samdb.domain_dns_name()), estr)
+            raise DemoteException(
+                "Failure checking if %s is an NTDS DSA in %s: %s" %
+                (ntds_dn, samdb.domain_dns_name(), estr))
 
     # If the NTDS Settings child DN wasn't found or wasnt an ntdsDSA
     # object, just remove the server object located above

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Unit tests for the notification control
 # Copyright (C) Stefan Metzmacher 2016
@@ -67,7 +67,7 @@ creds.set_gensec_features(creds.get_gensec_features() | gensec.FEATURE_SEAL)
 class LDAPNotificationTest(samba.tests.TestCase):
 
     def setUp(self):
-        super(samba.tests.TestCase, self).setUp()
+        super(LDAPNotificationTest, self).setUp()
         self.ldb = SamDB(url, credentials=creds, session_info=system_session(lp), lp=lp)
         self.base_dn = self.ldb.domain_dn()
 
@@ -325,7 +325,7 @@ delete: otherLoginWorkstations
                               attrs=["lDAPDisplayName"],
                               controls=["paged_results:1:2500"])
         for msg in res:
-            va = msg["lDAPDisplayName"][0]
+            va = str(msg["lDAPDisplayName"][0])
             if va in valid_attrs:
                 continue
 

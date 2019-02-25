@@ -108,15 +108,6 @@ static bool is_internal_domain(const struct dom_sid *sid)
 	return (sid_check_is_our_sam(sid) || sid_check_is_builtin(sid));
 }
 
-static bool is_in_internal_domain(const struct dom_sid *sid)
-{
-	if (sid == NULL)
-		return False;
-
-	return (sid_check_is_in_our_sam(sid) || sid_check_is_in_builtin(sid));
-}
-
-
 /* Add a trusted domain to our list of domains.
    If the domain already exists in the list,
    return it and don't re-initialize.  */
@@ -135,6 +126,7 @@ static NTSTATUS add_trusted_domain(const char *domain_name,
 	const char **ignored_domains = NULL;
 	const char **dom = NULL;
 	int role = lp_server_role();
+	struct dom_sid_buf buf;
 
 	if (is_null_sid(sid)) {
 		DBG_ERR("Got null SID for domain [%s]\n", domain_name);
@@ -178,7 +170,8 @@ static NTSTATUS add_trusted_domain(const char *domain_name,
 		if (check_domain != NULL) {
 			DBG_ERR("SID [%s] already used by domain [%s], "
 				"expected [%s]\n",
-				sid_string_dbg(sid), check_domain->name,
+				dom_sid_str_buf(sid, &buf),
+				check_domain->name,
 				domain->name);
 			return NT_STATUS_INVALID_PARAMETER;
 		}
@@ -301,7 +294,7 @@ static NTSTATUS add_trusted_domain(const char *domain_name,
 
 	DBG_NOTICE("Added domain [%s] [%s] [%s]\n",
 		   domain->name, domain->alt_name,
-		   sid_string_dbg(&domain->sid));
+		   dom_sid_str_buf(&domain->sid, &buf));
 
 	*_d = domain;
 	return NT_STATUS_OK;
@@ -1464,7 +1457,9 @@ struct winbindd_domain *find_default_route_domain(void)
 
 struct winbindd_domain *find_lookup_domain_from_sid(const struct dom_sid *sid)
 {
-	DBG_DEBUG("SID [%s]\n", sid_string_dbg(sid));
+	struct dom_sid_buf buf;
+
+	DBG_DEBUG("SID [%s]\n", dom_sid_str_buf(sid, &buf));
 
 	/*
 	 * SIDs in the S-1-22-{1,2} domain and well-known SIDs should be handled
@@ -1475,20 +1470,18 @@ struct winbindd_domain *find_lookup_domain_from_sid(const struct dom_sid *sid)
 	     sid_check_is_unix_groups(sid) ||
 	     sid_check_is_in_unix_users(sid) ||
 	     sid_check_is_unix_users(sid) ||
-	     sid_check_is_wellknown_domain(sid, NULL) ||
-	     sid_check_is_in_wellknown_domain(sid) )
+	     sid_check_is_our_sam(sid) ||
+             sid_check_is_in_our_sam(sid) )
 	{
 		return find_domain_from_sid(get_global_sam_sid());
 	}
 
-	/*
-	 * On member servers the internal domains are different: These are part
-	 * of the local SAM.
-	 */
-
-	if (is_internal_domain(sid) || is_in_internal_domain(sid)) {
-		DEBUG(10, ("calling find_domain_from_sid\n"));
-		return find_domain_from_sid(sid);
+	if ( sid_check_is_builtin(sid) ||
+	     sid_check_is_in_builtin(sid) ||
+	     sid_check_is_wellknown_domain(sid, NULL) ||
+	     sid_check_is_in_wellknown_domain(sid) )
+	{
+		return find_domain_from_sid(&global_sid_Builtin);
 	}
 
 	if (IS_DC) {
@@ -1515,6 +1508,8 @@ struct winbindd_domain *find_lookup_domain_from_sid(const struct dom_sid *sid)
 
 struct winbindd_domain *find_lookup_domain_from_name(const char *domain_name)
 {
+	bool predefined;
+
 	if ( strequal(domain_name, unix_users_domain_name() ) ||
 	     strequal(domain_name, unix_groups_domain_name() ) )
 	{
@@ -1526,8 +1521,14 @@ struct winbindd_domain *find_lookup_domain_from_name(const char *domain_name)
 	}
 
 	if (strequal(domain_name, "BUILTIN") ||
-	    strequal(domain_name, get_global_sam_name()))
+	    strequal(domain_name, get_global_sam_name())) {
 		return find_domain_from_name_noinit(domain_name);
+	}
+
+	predefined = dom_sid_lookup_is_predefined_domain(domain_name);
+	if (predefined) {
+		return find_domain_from_name_noinit(builtin_domain_name());
+	}
 
 	if (IS_DC) {
 		struct winbindd_domain *domain = NULL;

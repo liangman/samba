@@ -40,45 +40,45 @@ def options(opt):
                          "--with-shared-modules"),
                    action="store", dest='shared_modules', default=None)
 
-    opt.SAMBA3_ADD_OPTION('winbind')
-    opt.SAMBA3_ADD_OPTION('ads')
-    opt.SAMBA3_ADD_OPTION('ldap')
-    opt.SAMBA3_ADD_OPTION('cups', with_name="enable", without_name="disable")
-    opt.SAMBA3_ADD_OPTION('iprint', with_name="enable", without_name="disable")
-    opt.SAMBA3_ADD_OPTION('pam')
-    opt.SAMBA3_ADD_OPTION('quotas')
-    opt.SAMBA3_ADD_OPTION('sendfile-support')
-    opt.SAMBA3_ADD_OPTION('utmp')
-    opt.SAMBA3_ADD_OPTION('avahi', with_name="enable", without_name="disable")
-    opt.SAMBA3_ADD_OPTION('iconv')
-    opt.SAMBA3_ADD_OPTION('acl-support')
-    opt.SAMBA3_ADD_OPTION('dnsupdate')
-    opt.SAMBA3_ADD_OPTION('syslog')
-    opt.SAMBA3_ADD_OPTION('automount')
-    opt.SAMBA3_ADD_OPTION('dmapi', default=None) # None means autodetection
-    opt.SAMBA3_ADD_OPTION('fam', default=None) # None means autodetection
-    opt.SAMBA3_ADD_OPTION('profiling-data', default=False)
-    opt.SAMBA3_ADD_OPTION('libarchive', default=True)
+    opt.samba_add_onoff_option('winbind')
+    opt.samba_add_onoff_option('ads')
+    opt.samba_add_onoff_option('ldap')
+    opt.samba_add_onoff_option('cups', with_name="enable", without_name="disable")
+    opt.samba_add_onoff_option('iprint', with_name="enable", without_name="disable")
+    opt.samba_add_onoff_option('pam')
+    opt.samba_add_onoff_option('quotas', default=None)
+    opt.samba_add_onoff_option('sendfile-support', default=None)
+    opt.samba_add_onoff_option('utmp')
+    opt.samba_add_onoff_option('avahi', with_name="enable", without_name="disable")
+    opt.samba_add_onoff_option('iconv')
+    opt.samba_add_onoff_option('acl-support')
+    opt.samba_add_onoff_option('dnsupdate')
+    opt.samba_add_onoff_option('syslog')
+    opt.samba_add_onoff_option('automount')
+    opt.samba_add_onoff_option('dmapi', default=None) # None means autodetection
+    opt.samba_add_onoff_option('fam', default=None) # None means autodetection
+    opt.samba_add_onoff_option('profiling-data', default=False)
+    opt.samba_add_onoff_option('libarchive', default=True)
 
-    opt.SAMBA3_ADD_OPTION('cluster-support', default=False)
+    opt.samba_add_onoff_option('cluster-support', default=False)
 
-    opt.SAMBA3_ADD_OPTION('regedit', default=None)
+    opt.samba_add_onoff_option('regedit', default=None)
 
-    opt.SAMBA3_ADD_OPTION('fake-kaserver',
+    opt.samba_add_onoff_option('fake-kaserver',
                           help=("Include AFS fake-kaserver support"), default=False)
 
     opt.add_option('--with-libcephfs',
                    help=("Directory under which libcephfs is installed"),
                    action="store", dest='libcephfs_dir', default=None)
 
-    opt.SAMBA3_ADD_OPTION('glusterfs', with_name="enable", without_name="disable", default=True)
-    opt.SAMBA3_ADD_OPTION('cephfs', with_name="enable", without_name="disable", default=True)
+    opt.samba_add_onoff_option('glusterfs', with_name="enable", without_name="disable", default=True)
+    opt.samba_add_onoff_option('cephfs', with_name="enable", without_name="disable", default=True)
 
     opt.add_option('--enable-vxfs',
                   help=("enable support for VxFS (default=no)"),
                   action="store_true", dest='enable_vxfs', default=False)
 
-    opt.SAMBA3_ADD_OPTION('spotlight', with_name="enable", without_name="disable", default=False)
+    opt.samba_add_onoff_option('spotlight', with_name="enable", without_name="disable", default=False)
 
 def configure(conf):
     default_static_modules = []
@@ -809,6 +809,8 @@ msg.msg_accrightslen = sizeof(fd);
                                     define='HAVE_UT_UT_EXIT')
         conf.CHECK_STRUCTURE_MEMBER('struct utmpx', 'ut_syslen', headers='utmpx.h',
                                     define='HAVE_UX_UT_SYSLEN')
+        conf.CHECK_STRUCTURE_MEMBER('struct utmpx', 'ut_host', headers='utmpx.h',
+                                    define='HAVE_UX_UT_HOST')
         conf.CHECK_CODE('struct utmp utarg; struct utmp *utreturn; utreturn = pututline(&utarg);',
                         'PUTUTLINE_RETURNS_UTMP', headers='utmp.h',
                         msg="Checking whether pututline returns pointer")
@@ -1250,7 +1252,9 @@ main() {
                     addmain=False,
                     execute=True)
 
-    if Options.options.with_sendfile_support:
+    conf.SET_TARGET_TYPE('sendfile', 'EMPTY')
+    conf.CHECK_LIB('sendfile')
+    if not Options.options.with_sendfile_support == False:
         if (host_os.rfind('linux') > -1) or (host_os.rfind('gnu') > -1) or (host_os.rfind('k*bsd*-gnu') > -1) or (host_os.rfind('kopensolaris*-gnu') > -1):
             conf.CHECK_CODE('''
                             int tofd, fromfd;
@@ -1265,7 +1269,6 @@ main() {
             if conf.CONFIG_SET('_HAVE_SENDFILE'):
                 conf.DEFINE('HAVE_SENDFILE', '1')
                 conf.DEFINE('LINUX_SENDFILE_API', '1')
-                conf.DEFINE('WITH_SENDFILE', '1')
         elif (host_os.rfind('freebsd') > -1) or (host_os.rfind('dragonfly') > -1):
             conf.CHECK_CODE('''
                             #include <sys/types.h>
@@ -1289,7 +1292,6 @@ main() {
             if conf.CONFIG_SET('_HAVE_SENDFILE'):
                 conf.DEFINE('HAVE_SENDFILE', '1')
                 conf.DEFINE('FREEBSD_SENDFILE_API', '1')
-                conf.DEFINE('WITH_SENDFILE', '1')
         elif (host_os.rfind('darwin') > -1):
             conf.CHECK_CODE('''
                             #include <sys/types.h>
@@ -1312,7 +1314,6 @@ main() {
             if conf.CONFIG_SET('_HAVE_SENDFILE'):
                 conf.DEFINE('HAVE_SENDFILE', '1')
                 conf.DEFINE('DARWIN_SENDFILE_API', '1')
-                conf.DEFINE('WITH_SENDFILE', '1')
         elif (host_os.rfind('hpux') > -1) or (host_os.rfind('osf') > -1):
             conf.CHECK_CODE('''
                             #include <sys/socket.h>
@@ -1331,9 +1332,8 @@ main() {
             if conf.CONFIG_SET('_HAVE_SENDFILE'):
                 conf.DEFINE('HAVE_SENDFILE', '1')
                 conf.DEFINE('HPUX_SENDFILE_API', '1')
-                conf.DEFINE('WITH_SENDFILE', '1')
-        elif (host_os.rfind('solaris') > -1):
-            conf.CHECK_FUNCS_IN('sendfile', 'sendfilev')
+        elif (host_os.rfind('sunos') > -1):
+            conf.CHECK_FUNCS_IN('sendfilev', 'sendfile')
             conf.CHECK_CODE('''
                             #include <sys/sendfile.h>,
                             int sfvcnt;
@@ -1353,11 +1353,11 @@ main() {
                             nwritten = sendfilev(tofd, vec, sfvcnt, &xferred);
                             ''',
                             '_HAVE_SENDFILEV',
-                            msg='Checking for solaris sendfilev support')
+                            msg='Checking for solaris sendfilev support',
+                            lib='sendfile')
             if conf.CONFIG_SET('_HAVE_SENDFILEV'):
                 conf.DEFINE('HAVE_SENDFILEV', '1')
                 conf.DEFINE('SOLARIS_SENDFILE_API', '1')
-                conf.DEFINE('WITH_SENDFILE', '1')
         elif (host_os.rfind('aix') > -1):
             conf.CHECK_CODE('''
                             #include <sys/socket.h>
@@ -1379,8 +1379,9 @@ main() {
             if conf.CONFIG_SET('_HAVE_SENDFILE'):
                 conf.DEFINE('HAVE_SENDFILE', '1')
                 conf.DEFINE('AIX_SENDFILE_API', '1')
-                conf.DEFINE('WITH_SENDFILE', '1')
 
+    if Options.options.with_sendfile_support == True and not conf.CONFIG_SET('HAVE_SENDFILE'):
+        conf.fatal('sendfile support not found but it was requested !')
     # Check for getcwd allowing a NULL arg.
     conf.CHECK_CODE('''
 #include <unistd.h>
@@ -1397,13 +1398,15 @@ main() {
     conf.CHECK_FUNCS_IN('getspnam', 'sec')
 
     legacy_quota_libs = ''
-    if Options.options.with_quotas:
+    if not Options.options.with_quotas == False:
         # For quotas on Veritas VxFS filesystems
         conf.CHECK_HEADERS('sys/fs/vx_quota.h')
         # For sys/quota.h and linux/quota.h
         conf.CHECK_HEADERS('sys/quota.h')
         # For quotas on BSD systems
         conf.CHECK_HEADERS('ufs/ufs/quota.h')
+        # For quotas on AIX systems
+        conf.CHECK_HEADERS('jfs/quota.h')
         # For quotas on Linux XFS filesystems
         if conf.CHECK_HEADERS('xfs/xqm.h'):
             conf.DEFINE('HAVE_XFS_QUOTAS', '1')
@@ -1437,7 +1440,7 @@ main() {
                                         headers='rpcsvc/rquota.h',
                                         lib='tirpc')
 
-            # Required fucntion for NFS quote support
+            # Required function for NFS quote support
             conf.CHECK_CODE('''
                             clnt_create("", RQUOTAPROG, RQUOTAVERS, "udp");
                             ''',
@@ -1502,6 +1505,9 @@ main() {
             if not conf.CONFIG_SET('WITH_QUOTAS'):
                 legacy_quota_libs = ''
     conf.env['legacy_quota_libs'] = legacy_quota_libs
+
+    if Options.options.with_quotas == True and not conf.CONFIG_SET('WITH_QUOTAS'):
+        conf.fatal('quota support not found but it was equested !')
 
     conf.CHECK_CODE('(void)unshare(CLONE_FS);',
                     headers='sched.h',
@@ -1571,6 +1577,9 @@ main() {
         conf.CHECK_CFG(package='glusterfs-api', args='"glusterfs-api >= 6" --cflags --libs',
                        msg='Checking for glusterfs-api >= 6',
                        uselib_store="GFAPI_VER_6")
+        conf.CHECK_CFG(package='glusterfs-api', args='"glusterfs-api >= 7.6" --cflags --libs',
+                       msg='Checking for glusterfs-api >= 7.6',
+                       uselib_store="GFAPI_VER_7_6")
     else:
         conf.SET_TARGET_TYPE('gfapi', 'EMPTY')
         conf.undefine('HAVE_GLUSTERFS')
@@ -1646,6 +1655,9 @@ main() {
 
     conf.CHECK_HEADERS('rpc/xdr.h', lib='tirpc')
 
+    if conf.CHECK_FUNCS_IN('nscd_flush_cache', 'nscd', headers='libnscd.h'):
+        conf.DEFINE('HAVE_NSCD_FLUSH_CACHE', '1')
+
     forced_static_modules.extend(TO_LIST('auth_builtin auth_sam auth_winbind'))
     default_static_modules.extend(TO_LIST('''pdb_smbpasswd pdb_tdbsam
                                       auth_unix
@@ -1662,6 +1674,7 @@ main() {
                                       vfs_media_harmony vfs_unityed_media vfs_fruit vfs_shell_snap
                                       vfs_commit vfs_worm vfs_crossrename vfs_linux_xfs_sgid
                                       vfs_time_audit vfs_offline vfs_virusfilter
+                                      vfs_glusterfs_fuse
                                   '''))
     default_shared_modules.extend(TO_LIST('auth_script idmap_tdb2 idmap_script'))
     # these have broken dependencies

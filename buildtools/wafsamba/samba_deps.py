@@ -719,6 +719,11 @@ def reduce_objects(bld, tgt_list):
                 if t.sname in rely_on:
                     dup = dup.difference(rely_on[t.sname])
                 if dup:
+                    # Do not remove duplicates of BUILTINS
+                    d = next(iter(dup))
+                    if BUILTIN_LIBRARY(bld, d):
+                        continue
+
                     debug('deps: removing dups from %s of type %s: %s also in %s %s',
                           t.sname, t.samba_type, dup, t2.samba_type, l)
                     new = new.difference(dup)
@@ -1011,14 +1016,14 @@ def save_samba_deps(bld, tgt_list):
         if tdeps != {}:
             denv.outenv[t.sname] = tdeps
 
-    depsfile = os.path.join(bld.bdir, "sambadeps")
+    depsfile = os.path.join(bld.cache_dir, "sambadeps")
     denv.store_fast(depsfile)
 
 
 
 def load_samba_deps(bld, tgt_list):
     '''load a previous set of build dependencies if possible'''
-    depsfile = os.path.join(bld.bldnode.abspath(), "sambadeps")
+    depsfile = os.path.join(bld.cache_dir, "sambadeps")
     denv = ConfigSet.ConfigSet()
     try:
         debug('deps: checking saved dependencies')

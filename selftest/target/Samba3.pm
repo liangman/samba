@@ -3,6 +3,9 @@
 # Copyright (C) 2005-2007 Jelmer Vernooij <jelmer@samba.org>
 # Published under the GNU GPL, v3 or later.
 
+# NOTE: Refer to the README for more details about the various testenvs,
+# and tips about adding new testenvs.
+
 package Samba3;
 
 use strict;
@@ -409,6 +412,8 @@ sub setup_ad_member
         realm = $dcvars->{REALM}
         netbios aliases = foo bar
 	template homedir = /home/%D/%G/%U
+	auth event notification = true
+	password server = $dcvars->{SERVER}
 
 [sub_dug]
 	path = $share_dir/D_%D/U_%U/G_%G
@@ -448,6 +453,7 @@ sub setup_ad_member
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
+	$ret->{RESOLV_CONF} = $dcvars->{RESOLV_CONF};
 
 	my $net = Samba::bindir_path($self, "net");
 	# Add hosts file for name lookups
@@ -480,6 +486,7 @@ sub setup_ad_member
 	$ret->{DC_SERVER} = $dcvars->{SERVER};
 	$ret->{DC_SERVER_IP} = $dcvars->{SERVER_IP};
 	$ret->{DC_SERVER_IPV6} = $dcvars->{SERVER_IPV6};
+	$ret->{DC_SERVERCONFFILE} = $dcvars->{SERVERCONFFILE};
 	$ret->{DC_NETBIOSNAME} = $dcvars->{NETBIOSNAME};
 	$ret->{DC_USERNAME} = $dcvars->{USERNAME};
 	$ret->{DC_PASSWORD} = $dcvars->{PASSWORD};
@@ -543,6 +550,7 @@ sub setup_ad_member_rfc2307
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
+	$ret->{RESOLV_CONF} = $dcvars->{RESOLV_CONF};
 
 	my $net = Samba::bindir_path($self, "net");
 	# Add hosts file for name lookups
@@ -601,6 +609,9 @@ sub setup_ad_member_idmap_rid
 	idmap config * : range = 1000000-1999999
 	idmap config $dcvars->{DOMAIN} : backend = rid
 	idmap config $dcvars->{DOMAIN} : range = 2000000-2999999
+	# Prevent overridding the provisioned lib/krb5.conf which sets certain
+	# values required for tests to succeed
+	create krb5 conf = no
 ";
 
 	my $ret = $self->provision($prefix, $dcvars->{DOMAIN},
@@ -630,6 +641,7 @@ sub setup_ad_member_idmap_rid
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
+	$ret->{RESOLV_CONF} = $dcvars->{RESOLV_CONF};
 
 	my $net = Samba::bindir_path($self, "net");
 	# Add hosts file for name lookups
@@ -718,6 +730,7 @@ sub setup_ad_member_idmap_ad
 	Samba::mk_krb5_conf($ctx, "");
 
 	$ret->{KRB5_CONFIG} = $ctx->{krb5_conf};
+	$ret->{RESOLV_CONF} = $dcvars->{RESOLV_CONF};
 
 	my $net = Samba::bindir_path($self, "net");
 	# Add hosts file for name lookups
@@ -838,6 +851,10 @@ sub setup_simpleserver
 	path = $prefix_abs/share
 	vfs objects =
 	smb encrypt = desired
+
+[hidenewfiles]
+	path = $prefix_abs/share
+	hide new files timeout = 5
 ";
 
 	my $vars = $self->provision($path, "WORKGROUP",
@@ -970,6 +987,15 @@ sub setup_fileserver
 	comment = inherit only unix owner
 	inherit owner = unix only
 	acl_xattr:ignore system acls = yes
+# BUG: https://bugzilla.samba.org/show_bug.cgi?id=13690
+[force_group_test]
+	path = $share_dir
+	comment = force group test
+#	force group = everyone
+[homes]
+	comment = Home directories
+	browseable = No
+	read only = No
 ";
 
 	my $vars = $self->provision($path, "WORKGROUP",
@@ -1631,6 +1657,8 @@ sub provision($$$$$$$$$)
 
 	my $conffile="$libdir/server.conf";
 	my $dfqconffile="$libdir/dfq.conf";
+	my $errorinjectconf="$libdir/error_inject.conf";
+	my $delayinjectconf="$libdir/delay_inject.conf";
 
 	my $nss_wrapper_pl = "$ENV{PERL} $self->{srcdir}/third_party/nss_wrapper/nss_wrapper.pl";
 	my $nss_wrapper_passwd = "$privatedir/passwd";
@@ -1659,8 +1687,11 @@ sub provision($$$$$$$$$)
 	my ($gid_force_user);
 	my ($uid_user1);
 	my ($uid_user2);
+	my ($uid_gooduser);
+	my ($uid_eviluser);
+	my ($uid_slashuser);
 
-	if ($unix_uid < 0xffff - 10) {
+	if ($unix_uid < 0xffff - 13) {
 		$max_uid = 0xffff;
 	} else {
 		$max_uid = $unix_uid;
@@ -1676,6 +1707,9 @@ sub provision($$$$$$$$$)
 	$uid_smbget = $max_uid - 8;
 	$uid_user1 = $max_uid - 9;
 	$uid_user2 = $max_uid - 10;
+	$uid_gooduser = $max_uid - 11;
+	$uid_eviluser = $max_uid - 12;
+	$uid_slashuser = $max_uid - 13;
 
 	if ($unix_gids[0] < 0xffff - 8) {
 		$max_gid = 0xffff;
@@ -2006,6 +2040,24 @@ sub provision($$$$$$$$$)
 	fruit:time machine = yes
 	fruit:time machine max size = 32K
 
+[vfs_fruit_wipe_intentionally_left_blank_rfork]
+	path = $shrdir
+	vfs objects = fruit streams_xattr acl_xattr xattr_tdb
+	fruit:resource = file
+	fruit:metadata = stream
+	fruit:wipe_intentionally_left_blank_rfork = true
+	fruit:delete_empty_adfiles = false
+	fruit:veto_appledouble = no
+
+[vfs_fruit_delete_empty_adfiles]
+	path = $shrdir
+	vfs objects = fruit streams_xattr acl_xattr xattr_tdb
+	fruit:resource = file
+	fruit:metadata = stream
+	fruit:wipe_intentionally_left_blank_rfork = true
+	fruit:delete_empty_adfiles = true
+	fruit:veto_appledouble = no
+
 [badname-tmp]
 	path = $badnames_shrdir
 	guest ok = yes
@@ -2165,6 +2217,15 @@ sub provision($$$$$$$$$)
 	vfs objects = shadow_copy2
 	shadow:mountpoint = $shadow_mntdir
 	wide links = yes
+
+[shadow_write]
+	path = $shadow_tstdir
+	comment = previous versions snapshots under mount point
+	vfs objects = shadow_copy2 streams_xattr error_inject
+	aio write size = 0
+	error_inject:pwrite = EBADF
+	shadow:mountpoint = $shadow_tstdir
+
 [dfq]
 	path = $shrdir/dfree
 	vfs objects = acl_xattr fake_acls xattr_tdb fake_dfq
@@ -2223,7 +2284,7 @@ sub provision($$$$$$$$$)
 [error_inject]
 	copy = tmp
 	vfs objects = error_inject
-	include = $libdir/error_inject.conf
+	include = $errorinjectconf
 
 [delay_inject]
 	copy = tmp
@@ -2231,7 +2292,17 @@ sub provision($$$$$$$$$)
 	kernel share modes = no
 	kernel oplocks = no
 	posix locking = no
-	include = $libdir/delay_inject.conf
+	include = $delayinjectconf
+
+[aio_delay_inject]
+	copy = tmp
+	vfs objects = delay_inject
+	delay_inject:pread_send = 2000
+	delay_inject:pwrite_send = 2000
+
+[delete_readonly]
+	path = $prefix_abs/share
+	delete readonly = yes
 	";
 	close(CONF);
 
@@ -2244,6 +2315,18 @@ sub provision($$$$$$$$$)
 	    warn("Join failed\n$cmd");
 	    return undef;
 	}
+
+	unless (open(ERRORCONF, ">$errorinjectconf")) {
+		warn("Unable to open $errorinjectconf");
+		return undef;
+	}
+	close(ERRORCONF);
+
+	unless (open(DELAYCONF, ">$delayinjectconf")) {
+		warn("Unable to open $delayinjectconf");
+		return undef;
+	}
+	close(DELAYCONF);
 
 	unless (open(DFQCONF, ">$dfqconffile")) {
 	        warn("Unable to open $dfqconffile");
@@ -2269,6 +2352,9 @@ force_user:x:$uid_force_user:$gid_force_user:force user gecos:$prefix_abs:/bin/f
 smbget_user:x:$uid_smbget:$gid_domusers:smbget_user gecos:$prefix_abs:/bin/false
 user1:x:$uid_user1:$gid_nogroup:user1 gecos:$prefix_abs:/bin/false
 user2:x:$uid_user2:$gid_nogroup:user2 gecos:$prefix_abs:/bin/false
+gooduser:x:$uid_gooduser:$gid_domusers:gooduser gecos:$prefix_abs:/bin/false
+eviluser:x:$uid_eviluser:$gid_domusers:eviluser gecos::/bin/false
+slashuser:x:$uid_slashuser:$gid_domusers:slashuser gecos:/:/bin/false
 ";
 	if ($unix_uid != 0) {
 		print PASSWD "root:x:$uid_root:$gid_root:root gecos:$prefix_abs:/bin/false
@@ -2345,6 +2431,9 @@ force_user:x:$gid_force_user:
 	createuser($self, "smbget_user", $password, $conffile, \%createuser_env) || die("Unable to create smbget_user");
 	createuser($self, "user1", $password, $conffile, \%createuser_env) || die("Unable to create user1");
 	createuser($self, "user2", $password, $conffile, \%createuser_env) || die("Unable to create user2");
+	createuser($self, "gooduser", $password, $conffile, \%createuser_env) || die("Unable to create gooduser");
+	createuser($self, "eviluser", $password, $conffile, \%createuser_env) || die("Unable to create eviluser");
+	createuser($self, "slashuser", $password, $conffile, \%createuser_env) || die("Unable to create slashuser");
 
 	open(DNS_UPDATE_LIST, ">$prefix/dns_update_list") or die("Unable to open $$prefix/dns_update_list");
 	print DNS_UPDATE_LIST "A $server. $server_ip\n";

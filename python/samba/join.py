@@ -24,7 +24,6 @@ from samba.samdb import SamDB
 from samba import gensec, Ldb, drs_utils, arcfour_encrypt, string_to_byte_array
 import ldb
 import samba
-import sys
 import uuid
 from samba.ndr import ndr_pack, ndr_unpack
 from samba.dcerpc import security, drsuapi, misc, nbt, lsa, drsblobs, dnsserver, dnsp
@@ -41,10 +40,9 @@ from samba import read_and_sub_file
 from samba import werror
 from base64 import b64encode
 from samba import WERRORError, NTSTATUSError
-from samba.dnsserver import ARecord, AAAARecord, PTRRecord, CNameRecord, NSRecord, MXRecord, SOARecord, SRVRecord, TXTRecord
 from samba import sd_utils
+from samba.dnsserver import ARecord, AAAARecord, CNameRecord
 import logging
-import talloc
 import random
 import time
 import re
@@ -52,6 +50,7 @@ import os
 import tempfile
 from samba.compat import text_type
 from samba.compat import get_string
+from samba.netcmd import CommandError
 
 
 class DCJoinException(Exception):
@@ -112,9 +111,9 @@ class DCJoinContext(object):
             ctx.site = DEFAULTSITE
 
         try:
-            ctx.samdb.search(scope=ldb.SCOPE_ONELEVEL, attrs=["dn"])
-        except ldb.LdbError as e4:
-            (enum, estr) = e4.args
+            ctx.samdb.search(scope=ldb.SCOPE_BASE, attrs=[])
+        except ldb.LdbError as e:
+            (enum, estr) = e.args
             raise DCJoinException(estr)
 
         ctx.base_dn = str(ctx.samdb.get_default_basedn())
@@ -347,10 +346,10 @@ class DCJoinContext(object):
         try:
             ctx.cldap_ret = ctx.net.finddc(domain=domain, flags=nbt.NBT_SERVER_LDAP | nbt.NBT_SERVER_DS | nbt.NBT_SERVER_WRITABLE)
         except NTSTATUSError as error:
-            raise Exception("Failed to find a writeable DC for domain '%s': %s" %
-                            (domain, error[1]))
+            raise CommandError("Failed to find a writeable DC for domain '%s': %s" %
+                               (domain, error.args[1]))
         except Exception:
-            raise Exception("Failed to find a writeable DC for domain '%s'" % domain)
+            raise CommandError("Failed to find a writeable DC for domain '%s'" % domain)
         if ctx.cldap_ret.client_site is not None and ctx.cldap_ret.client_site != "":
             ctx.site = ctx.cldap_ret.client_site
         return ctx.cldap_ret.pdc_dns_name
@@ -737,7 +736,7 @@ class DCJoinContext(object):
                     pass
                 ctx.net.set_password(account_name=ctx.samname,
                                      domain_name=ctx.domain_name,
-                                     newpassword=ctx.acct_pass.encode('utf-8'))
+                                     newpassword=ctx.acct_pass)
 
             res = ctx.samdb.search(base=ctx.acct_dn, scope=ldb.SCOPE_BASE,
                                    attrs=["msDS-KeyVersionNumber",
@@ -948,7 +947,7 @@ class DCJoinContext(object):
                 repl_creds.guess(ctx.lp)
                 repl_creds.set_kerberos_state(DONT_USE_KERBEROS)
                 repl_creds.set_username(ctx.samname)
-                repl_creds.set_password(ctx.acct_pass.encode('utf-8'))
+                repl_creds.set_password(ctx.acct_pass)
             else:
                 repl_creds = ctx.creds
 
@@ -1020,6 +1019,28 @@ class DCJoinContext(object):
         else:
             ctx.local_samdb.transaction_commit()
 
+        # A large replication may have caused our LDB connection to the
+        # remote DC to timeout, so check the connection is still alive
+        ctx.refresh_ldb_connection()
+
+    def refresh_ldb_connection(ctx):
+        try:
+            # query the rootDSE to check the connection
+            ctx.samdb.search(scope=ldb.SCOPE_BASE, attrs=[])
+        except ldb.LdbError as e:
+            (enum, estr) = e.args
+
+            # if the connection was disconnected, then reconnect
+            if (enum == ldb.ERR_OPERATIONS_ERROR and
+                ('NT_STATUS_CONNECTION_DISCONNECTED' in estr or
+                 'NT_STATUS_CONNECTION_RESET' in estr)):
+                ctx.logger.warning("LDB connection disconnected. Reconnecting")
+                ctx.samdb = SamDB(url="ldap://%s" % ctx.server,
+                                  session_info=system_session(),
+                                  credentials=ctx.creds, lp=ctx.lp)
+            else:
+                raise DCJoinException(estr)
+
     def send_DsReplicaUpdateRefs(ctx, dn):
         r = drsuapi.DsReplicaUpdateRefsRequest1()
         r.naming_context = drsuapi.DsReplicaObjectIdentifier()
@@ -1062,7 +1083,6 @@ class DCJoinContext(object):
         """
 
         client_version = dnsserver.DNS_CLIENT_VERSION_LONGHORN
-        record_type = dnsp.DNS_TYPE_A
         select_flags = dnsserver.DNS_RPC_VIEW_AUTHORITY_DATA |\
             dnsserver.DNS_RPC_VIEW_NO_CHILDREN
 
@@ -1082,7 +1102,7 @@ class DCJoinContext(object):
 
         name_found = True
 
-        sd_helper = samba.sd_utils.SDUtils(ctx.samdb)
+        sd_helper = sd_utils.SDUtils(ctx.samdb)
 
         change_owner_sd = security.descriptor()
         change_owner_sd.owner_sid = ctx.new_dc_account_sid
@@ -1422,6 +1442,10 @@ class DCJoinContext(object):
                 print("Join failed - cleaning up")
             except IOError:
                 pass
+
+            # cleanup the failed join (checking we still have a live LDB
+            # connection to the remote DC first)
+            ctx.refresh_ldb_connection()
             ctx.cleanup_old_join()
             raise
 
@@ -1514,11 +1538,12 @@ def join_DC(logger=None, server=None, creds=None, lp=None, site=None, netbios_na
 
 def join_clone(logger=None, server=None, creds=None, lp=None,
                targetdir=None, domain=None, include_secrets=False,
-               dns_backend="NONE"):
+               dns_backend="NONE", backend_store=None):
     """Creates a local clone of a remote DC."""
     ctx = DCCloneContext(logger, server, creds, lp, targetdir=targetdir,
                          domain=domain, dns_backend=dns_backend,
-                         include_secrets=include_secrets)
+                         include_secrets=include_secrets,
+                         backend_store=backend_store)
 
     lp.set("workgroup", ctx.domain_name)
     logger.info("workgroup is %s" % ctx.domain_name)
@@ -1591,10 +1616,11 @@ class DCCloneContext(DCJoinContext):
 
     def __init__(ctx, logger=None, server=None, creds=None, lp=None,
                  targetdir=None, domain=None, dns_backend=None,
-                 include_secrets=False):
+                 include_secrets=False, backend_store=None):
         super(DCCloneContext, ctx).__init__(logger, server, creds, lp,
                                             targetdir=targetdir, domain=domain,
-                                            dns_backend=dns_backend)
+                                            dns_backend=dns_backend,
+                                            backend_store=backend_store)
 
         # As we don't want to create or delete these DNs, we set them to None
         ctx.server_dn = None
@@ -1644,12 +1670,13 @@ class DCCloneAndRenameContext(DCCloneContext):
 
     def __init__(ctx, new_base_dn, new_domain_name, new_realm, logger=None,
                  server=None, creds=None, lp=None, targetdir=None, domain=None,
-                 dns_backend=None, include_secrets=True):
+                 dns_backend=None, include_secrets=True, backend_store=None):
         super(DCCloneAndRenameContext, ctx).__init__(logger, server, creds, lp,
                                                      targetdir=targetdir,
                                                      domain=domain,
                                                      dns_backend=dns_backend,
-                                                     include_secrets=include_secrets)
+                                                     include_secrets=include_secrets,
+                                                     backend_store=backend_store)
         # store the new DN (etc) that we want the cloned DB to use
         ctx.new_base_dn = new_base_dn
         ctx.new_domain_name = new_domain_name
@@ -1716,7 +1743,8 @@ class DCCloneAndRenameContext(DCCloneContext):
                             configdn=ctx.rename_dn(ctx.config_dn),
                             domain=ctx.new_domain_name, domainsid=ctx.domsid,
                             serverrole="active directory domain controller",
-                            dns_backend=ctx.dns_backend)
+                            dns_backend=ctx.dns_backend,
+                            backend_store=ctx.backend_store)
 
         print("Provision OK for renamed domain DN %s" % presult.domaindn)
         ctx.local_samdb = presult.samdb

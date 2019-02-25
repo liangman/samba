@@ -181,7 +181,7 @@ static void msg_inject_fault(struct messaging_context *msg,
 		return;
 	}
 
-#if HAVE_STRSIGNAL
+#ifdef HAVE_STRSIGNAL
 	DEBUG(0, ("Process %s requested injection of signal %d (%s)\n",
 		  server_id_str_buf(src, &tmp), sig, strsignal(sig)));
 #else
@@ -190,6 +190,36 @@ static void msg_inject_fault(struct messaging_context *msg,
 #endif
 
 	kill(getpid(), sig);
+}
+#endif /* DEVELOPER */
+
+#if defined(DEVELOPER) || defined(ENABLE_SELFTEST)
+/*
+ * Sleep for the specified number of seconds.
+ */
+static void msg_sleep(struct messaging_context *msg,
+		      void *private_data,
+		      uint32_t msg_type,
+		      struct server_id src,
+		      DATA_BLOB *data)
+{
+	unsigned int seconds;
+	struct server_id_buf tmp;
+
+	if (data->length != sizeof(seconds)) {
+		DBG_ERR("Process %s sent bogus sleep request\n",
+			server_id_str_buf(src, &tmp));
+		return;
+	}
+
+	seconds = *(unsigned int *)data->data;
+	DBG_ERR("Process %s request a sleep of %u seconds\n",
+		server_id_str_buf(src, &tmp),
+		seconds);
+	sleep(seconds);
+	DBG_ERR("Restarting after %u second sleep requested by process %s\n",
+		seconds,
+		server_id_str_buf(src, &tmp));
 }
 #endif /* DEVELOPER */
 
@@ -1218,7 +1248,7 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 		char *sock_tok;
 		const char *sock_ptr;
 
-#if HAVE_IPV6
+#ifdef HAVE_IPV6
 		sock_addr = "::,0.0.0.0";
 #else
 		sock_addr = "0.0.0.0";
@@ -1299,6 +1329,10 @@ static bool open_sockets_smbd(struct smbd_parent_context *parent,
 #ifdef DEVELOPER
 	messaging_register(msg_ctx, NULL, MSG_SMB_INJECT_FAULT,
 			   msg_inject_fault);
+#endif
+
+#if defined(DEVELOPER) || defined(ENABLE_SELFTEST)
+	messaging_register(msg_ctx, NULL, MSG_SMB_SLEEP, msg_sleep);
 #endif
 
 	if (lp_multicast_dns_register() && (dns_port != 0)) {
@@ -1578,17 +1612,73 @@ extern void build_options(bool screen);
 		OPT_LOG_STDOUT
 	};
 	struct poptOption long_options[] = {
-	POPT_AUTOHELP
-	{"daemon", 'D', POPT_ARG_NONE, NULL, OPT_DAEMON, "Become a daemon (default)" },
-	{"interactive", 'i', POPT_ARG_NONE, NULL, OPT_INTERACTIVE, "Run interactive (not a daemon) and log to stdout"},
-	{"foreground", 'F', POPT_ARG_NONE, NULL, OPT_FORK, "Run daemon in foreground (for daemontools, etc.)" },
-	{"no-process-group", '\0', POPT_ARG_NONE, NULL, OPT_NO_PROCESS_GROUP, "Don't create a new process group" },
-	{"log-stdout", 'S', POPT_ARG_NONE, NULL, OPT_LOG_STDOUT, "Log to stdout" },
-	{"build-options", 'b', POPT_ARG_NONE, NULL, 'b', "Print build options" },
-	{"port", 'p', POPT_ARG_STRING, &ports, 0, "Listen on the specified ports"},
-	{"profiling-level", 'P', POPT_ARG_STRING, &profile_level, 0, "Set profiling level","PROFILE_LEVEL"},
-	POPT_COMMON_SAMBA
-	POPT_TABLEEND
+		POPT_AUTOHELP
+		{
+			.longName   = "daemon",
+			.shortName  = 'D',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_DAEMON,
+			.descrip    = "Become a daemon (default)" ,
+		},
+		{
+			.longName   = "interactive",
+			.shortName  = 'i',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_INTERACTIVE,
+			.descrip    = "Run interactive (not a daemon) and log to stdout",
+		},
+		{
+			.longName   = "foreground",
+			.shortName  = 'F',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_FORK,
+			.descrip    = "Run daemon in foreground (for daemontools, etc.)",
+		},
+		{
+			.longName   = "no-process-group",
+			.shortName  = '\0',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_NO_PROCESS_GROUP,
+			.descrip    = "Don't create a new process group" ,
+		},
+		{
+			.longName   = "log-stdout",
+			.shortName  = 'S',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_LOG_STDOUT,
+			.descrip    = "Log to stdout" ,
+		},
+		{
+			.longName   = "build-options",
+			.shortName  = 'b',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'b',
+			.descrip    = "Print build options" ,
+		},
+		{
+			.longName   = "port",
+			.shortName  = 'p',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &ports,
+			.val        = 0,
+			.descrip    = "Listen on the specified ports",
+		},
+		{
+			.longName   = "profiling-level",
+			.shortName  = 'P',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &profile_level,
+			.val        = 0,
+			.descrip    = "Set profiling level","PROFILE_LEVEL",
+		},
+		POPT_COMMON_SAMBA
+		POPT_TABLEEND
 	};
 	struct smbd_parent_context *parent = NULL;
 	TALLOC_CTX *frame;
@@ -1764,6 +1854,13 @@ extern void build_options(bool screen);
 		exit(1);
 	}
 
+	/*
+	 * This calls unshare(CLONE_FS); on linux
+	 * in order to check if the running kernel/container
+	 * environment supports it.
+	 */
+	per_thread_cwd_check();
+
 	if (!cluster_probe_ok()) {
 		exit(1);
 	}
@@ -1843,7 +1940,7 @@ extern void build_options(bool screen);
 		become_daemon(Fork, no_process_group, log_stdout);
 	}
 
-#if HAVE_SETPGID
+#ifdef HAVE_SETPGID
 	/*
 	 * If we're interactive we want to set our own process group for
 	 * signal management.

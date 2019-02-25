@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Tests various schema replication scenarios
@@ -940,7 +940,7 @@ class DrsReplicaSyncIntegrityTestCase(drs_base.DrsBaseTestCase):
         # This test is a little different in that we're particularly interested
         # in exercising the replmd client code on the second DC.
         # First, make sure the peer DC has the base OU, then connect to it (so
-        # we store its inital HWM)
+        # we store its initial HWM)
         self.sync_DCs()
         peer_conn = DcConnection(self, self.ldb_dc1, self.dnsname_dc1)
 

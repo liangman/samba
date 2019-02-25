@@ -470,11 +470,28 @@ static bool test_tfork_threads(struct torture_context *tctx)
 	bool ok = true;
 	const int num_threads = 64;
 	pthread_t threads[num_threads];
+	sigset_t set;
 	int i;
 
 #ifndef HAVE_PTHREAD
 	torture_skip(tctx, "no pthread support\n");
 #endif
+
+	/*
+	 * Be nasty and taste for the worst case: ensure all threads start with
+	 * SIGCHLD unblocked so we have the most fun with SIGCHLD being
+	 * delivered to a random thread. :)
+	 */
+	sigemptyset(&set);
+	sigaddset(&set, SIGCHLD);
+#ifdef HAVE_PTHREAD
+	ret = pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+#else
+	ret = sigprocmask(SIG_UNBLOCK, &set, NULL);
+#endif
+	if (ret != 0) {
+		return -1;
+	}
 
 	for (i = 0; i < num_threads; i++) {
 		ret = pthread_create(&threads[i], NULL, tfork_thread, NULL);
@@ -540,11 +557,21 @@ static bool test_tfork_event_file_handle(struct torture_context *tctx)
 
 	struct tfork *t1 = NULL;
 	pid_t child1;
-	struct pollfd poll1[] = { {-1, POLLIN} };
+	struct pollfd poll1[] = {
+		{
+			.fd = -1,
+			.events = POLLIN,
+		},
+	};
 
 	struct tfork *t2 = NULL;
 	pid_t child2;
-	struct pollfd poll2[] = { {-1, POLLIN} };
+	struct pollfd poll2[] = {
+		{
+			.fd = -1,
+			.events = POLLIN,
+		},
+	};
 
 
 	t1 = tfork_create();

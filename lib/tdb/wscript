@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 APPNAME = 'tdb'
-VERSION = '1.3.16'
+VERSION = '1.3.17'
 
 import sys, os
 
@@ -57,6 +57,7 @@ tdb1_unit_tests = [
     'run-mutex1',
     'run-circular-chain',
     'run-circular-freelist',
+    'run-traverse-chain',
 ]
 
 def options(opt):
@@ -221,7 +222,7 @@ def testonly(ctx):
         sh_tests = ["test/test_tdbbackup.sh test/jenkins-be-hash.tdb"]
 
         for sh_test in sh_tests:
-            cmd = "BINDIR={} {}".format(blddir, sh_test)
+            cmd = "BINDIR=%s %s" % (blddir, sh_test)
             print("shell test: " + cmd)
             ret = samba_utils.RUN_COMMAND(cmd)
             if ret != 0:

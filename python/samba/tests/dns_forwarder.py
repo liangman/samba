@@ -18,7 +18,6 @@
 from __future__ import print_function
 import os
 import sys
-import struct
 import random
 import socket
 import samba
@@ -82,13 +81,13 @@ class DNSTest(TestCase):
 
     def assert_dns_rcode_equals(self, packet, rcode):
         "Helper function to check return code"
-        p_errcode = packet.operation & 0x000F
+        p_errcode = packet.operation & dns.DNS_RCODE
         self.assertEquals(p_errcode, rcode, "Expected RCODE %s, got %s" %
                           (self.errcodes[rcode], self.errcodes[p_errcode]))
 
     def assert_dns_opcode_equals(self, packet, opcode):
         "Helper function to check opcode"
-        p_opcode = packet.operation & 0x7800
+        p_opcode = packet.operation & dns.DNS_OPCODE
         self.assertEquals(p_opcode, opcode, "Expected OPCODE %s, got %s" %
                           (opcode, p_opcode))
 
@@ -190,7 +189,7 @@ class TestDnsForwarding(DNSTest):
             time.sleep(0.05)
             s.connect((host, port))
             try:
-                s.send('timeout 0', 0)
+                s.send(b'timeout 0', 0)
             except socket.error as e:
                 if e.errno in (errno.ECONNREFUSED, errno.EHOSTUNREACH):
                     continue
@@ -207,7 +206,7 @@ class TestDnsForwarding(DNSTest):
 
     def test_comatose_forwarder(self):
         s = self.start_toy_server(dns_servers[0], 53, 'forwarder1')
-        s.send("timeout 1000000", 0)
+        s.send(b"timeout 1000000", 0)
 
         # make DNS query
         name = "an-address-that-will-not-resolve"
@@ -333,7 +332,7 @@ class TestDnsForwarding(DNSTest):
 
     def test_single_forwarder_waiting_forever(self):
         s = self.start_toy_server(dns_servers[0], 53, 'forwarder1')
-        s.send('timeout 10000', 0)
+        s.send(b'timeout 10000', 0)
         ad = contact_real_server(server_ip, 53)
         name = "dsfsfds.dsfsdfs"
         p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
@@ -362,7 +361,7 @@ class TestDnsForwarding(DNSTest):
             return
         s1 = self.start_toy_server(dns_servers[0], 53, 'forwarder1')
         s2 = self.start_toy_server(dns_servers[1], 53, 'forwarder2')
-        s1.send('timeout 1000', 0)
+        s1.send(b'timeout 1000', 0)
         ad = contact_real_server(server_ip, 53)
         name = "dsfsfds.dsfsdfs"
         p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
@@ -420,8 +419,8 @@ class TestDnsForwarding(DNSTest):
             return
         s1 = self.start_toy_server(dns_servers[0], 53, 'forwarder1')
         s2 = self.start_toy_server(dns_servers[1], 53, 'forwarder2')
-        s1.send('timeout 1.5', 0)
-        s2.send('timeout 1.5', 0)
+        s1.send(b'timeout 1.5', 0)
+        s2.send(b'timeout 1.5', 0)
         ad = contact_real_server(server_ip, 53)
         name = "dsfsfds.dsfsdfs"
         p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
@@ -506,7 +505,7 @@ class TestDnsForwarding(DNSTest):
             return
         s1 = self.start_toy_server(dns_servers[0], 53, 'forwarder1')
         s2 = self.start_toy_server(dns_servers[1], 53, 'forwarder2')
-        s1.send('timeout 10000', 0)
+        s1.send(b'timeout 10000', 0)
 
         name = 'resolve.cname.%s' % self.get_dns_domain()
         self.make_cname_update(name, "dsfsfds.dsfsdfs")

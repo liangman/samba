@@ -28,6 +28,7 @@
 #if defined(HAVE_UNISTD_H)
 #include <unistd.h>
 #endif
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -42,7 +43,6 @@
 
 #define DEBUG(x, y) printf y
 #define smb_panic(x) exit(1)
-#define bool int
 #endif
 
 /* are we running as non-root? This is used by the regresison test code,
@@ -544,12 +544,13 @@ static int have_syscall(void)
 	samba_setuidx(ID_EFFECTIVE, -1);
 #endif
 
-	if (errno == ENOSYS) return -1;
-	
+	if (errno == ENOSYS) {
+		return -1;
+	}
 	return 0;
 }
 
-main()
+int main(void)
 {
         if (getuid() != 0) {
 #if (defined(AIX) && defined(USE_SETREUID))

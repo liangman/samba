@@ -33,6 +33,8 @@ void initbase(void);
 
 static PyTypeObject dcerpc_InterfaceType;
 
+static PyTypeObject *BaseObject_Type;
+
 static PyTypeObject *ndr_syntax_id_Type;
 
 static bool PyString_AsGUID(PyObject *object, struct GUID *uuid)
@@ -203,19 +205,38 @@ static int py_iface_set_timeout(PyObject *obj, PyObject *value, void *closure)
 }
 
 static PyGetSetDef dcerpc_interface_getsetters[] = {
-	{ discard_const_p(char, "server_name"), py_iface_server_name, NULL,
-	  discard_const_p(char, "name of the server, if connected over SMB") },
-	{ discard_const_p(char, "abstract_syntax"), py_iface_abstract_syntax, NULL, 
- 	  discard_const_p(char, "syntax id of the abstract syntax") },
-	{ discard_const_p(char, "transfer_syntax"), py_iface_transfer_syntax, NULL, 
- 	  discard_const_p(char, "syntax id of the transfersyntax") },
-	{ discard_const_p(char, "session_key"), py_iface_session_key, NULL,
-	  discard_const_p(char, "session key (as used for blob encryption on LSA and SAMR)") },
-	{ discard_const_p(char, "user_session_key"), py_iface_user_session_key, NULL,
-	  discard_const_p(char, "user_session key (as used for blob encryption on DRSUAPI)") },
-	{ discard_const_p(char, "request_timeout"), py_iface_get_timeout, py_iface_set_timeout,
-	  discard_const_p(char, "request timeout, in seconds") },
-	{ NULL }
+	{
+		.name = discard_const_p(char, "server_name"),
+		.get  = py_iface_server_name,
+		.doc  = discard_const_p(char, "name of the server, if connected over SMB"),
+	},
+	{
+		.name = discard_const_p(char, "abstract_syntax"),
+		.get  = py_iface_abstract_syntax,
+		.doc  = discard_const_p(char, "syntax id of the abstract syntax"),
+	},
+	{
+		.name = discard_const_p(char, "transfer_syntax"),
+		.get  = py_iface_transfer_syntax,
+		.doc  = discard_const_p(char, "syntax id of the transfer syntax"),
+	},
+	{
+		.name = discard_const_p(char, "session_key"),
+		.get  = py_iface_session_key,
+		.doc  = discard_const_p(char, "session key (as used for blob encryption on LSA and SAMR)"),
+	},
+	{
+		.name = discard_const_p(char, "user_session_key"),
+		.get  = py_iface_user_session_key,
+		.doc  = discard_const_p(char, "user_session key (as used for blob encryption on DRSUAPI)"),
+	},
+	{
+		.name = discard_const_p(char, "request_timeout"),
+		.get  = py_iface_get_timeout,
+		.set  = py_iface_set_timeout,
+		.doc  = discard_const_p(char, "request timeout,	in seconds"),
+	},
+	{ .name = NULL }
 };
 
 static PyObject *py_iface_request(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -430,6 +451,92 @@ static PyTypeObject py_bind_time_features_syntax_SyntaxType = {
 	.tp_new = py_bind_time_features_syntax_new,
 };
 
+struct py_dcerpc_ndr_pointer {
+	PyObject *value;
+};
+
+static void py_dcerpc_ndr_pointer_dealloc(PyObject* self)
+{
+	struct py_dcerpc_ndr_pointer *obj =
+		pytalloc_get_type(self, struct py_dcerpc_ndr_pointer);
+
+	Py_DECREF(obj->value);
+	obj->value = NULL;
+
+	self->ob_type->tp_free(self);
+}
+
+static PyObject *py_dcerpc_ndr_pointer_get_value(PyObject *self, void *closure)
+{
+	struct py_dcerpc_ndr_pointer *obj =
+		pytalloc_get_type(self, struct py_dcerpc_ndr_pointer);
+
+	Py_INCREF(obj->value);
+	return obj->value;
+}
+
+static int py_dcerpc_ndr_pointer_set_value(PyObject *self, PyObject *value, void *closure)
+{
+	struct py_dcerpc_ndr_pointer *obj =
+		pytalloc_get_type(self, struct py_dcerpc_ndr_pointer);
+
+	Py_DECREF(obj->value);
+	obj->value = value;
+	Py_INCREF(obj->value);
+	return 0;
+}
+
+static PyGetSetDef py_dcerpc_ndr_pointer_getsetters[] = {
+	{
+		.name = discard_const_p(char, "value"),
+		.get  = py_dcerpc_ndr_pointer_get_value,
+		.set  = py_dcerpc_ndr_pointer_set_value,
+		.doc  = discard_const_p(char, "the value store by the pointer"),
+	},
+	{
+		.name = NULL,
+	},
+};
+
+static PyObject *py_dcerpc_ndr_pointer_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+{
+	PyObject *ret = NULL;
+	struct py_dcerpc_ndr_pointer *obj = NULL;
+	const char *kwnames[] = { "value", NULL };
+	PyObject *value = NULL;
+	bool ok;
+
+	ok = PyArg_ParseTupleAndKeywords(args, kwargs, "O:value",
+					 discard_const_p(char *, kwnames),
+					 &value);
+	if (!ok) {
+		return NULL;
+	}
+
+	ret = pytalloc_new(struct py_dcerpc_ndr_pointer, type);
+	if (ret == NULL) {
+		return NULL;
+	}
+
+	obj = pytalloc_get_type(ret, struct py_dcerpc_ndr_pointer);
+	*obj = (struct py_dcerpc_ndr_pointer) {
+		.value = value,
+	};
+
+	Py_INCREF(obj->value);
+	return ret;
+}
+
+static PyTypeObject py_dcerpc_ndr_pointer_type = {
+	PyVarObject_HEAD_INIT(NULL, 0)
+	.tp_name = "base.ndr_pointer",
+	.tp_dealloc = py_dcerpc_ndr_pointer_dealloc,
+	.tp_getset = py_dcerpc_ndr_pointer_getsetters,
+	.tp_doc = "ndr_pointer(value)\n",
+	.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+	.tp_new = py_dcerpc_ndr_pointer_new,
+};
+
 static struct PyModuleDef moduledef = {
     PyModuleDef_HEAD_INIT,
     .m_name = "base",
@@ -440,15 +547,30 @@ static struct PyModuleDef moduledef = {
 MODULE_INIT_FUNC(base)
 {
 	PyObject *m;
+	PyObject *dep_talloc;
 	PyObject *dep_samba_dcerpc_misc;
 
-	dep_samba_dcerpc_misc = PyImport_ImportModule("samba.dcerpc.misc");
-	if (dep_samba_dcerpc_misc == NULL)
+	dep_talloc = PyImport_ImportModule("talloc");
+	if (dep_talloc == NULL)
 		return NULL;
 
-	ndr_syntax_id_Type = (PyTypeObject *)PyObject_GetAttrString(dep_samba_dcerpc_misc, "ndr_syntax_id");
-	if (ndr_syntax_id_Type == NULL)
+	BaseObject_Type = (PyTypeObject *)PyObject_GetAttrString(dep_talloc, "BaseObject");
+	if (BaseObject_Type == NULL) {
+		Py_CLEAR(dep_talloc);
 		return NULL;
+	}
+
+	Py_CLEAR(dep_talloc);
+	dep_samba_dcerpc_misc = PyImport_ImportModule("samba.dcerpc.misc");
+	if (dep_samba_dcerpc_misc == NULL) {
+		return NULL;
+	}
+
+	ndr_syntax_id_Type = (PyTypeObject *)PyObject_GetAttrString(dep_samba_dcerpc_misc, "ndr_syntax_id");
+	Py_CLEAR(dep_samba_dcerpc_misc);
+	if (ndr_syntax_id_Type == NULL) {
+		return NULL;
+	}
 
 	py_transfer_syntax_ndr_SyntaxType.tp_base = ndr_syntax_id_Type;
 	py_transfer_syntax_ndr_SyntaxType.tp_basicsize = pytalloc_BaseObject_size();
@@ -457,19 +579,31 @@ MODULE_INIT_FUNC(base)
 	py_bind_time_features_syntax_SyntaxType.tp_base = ndr_syntax_id_Type;
 	py_bind_time_features_syntax_SyntaxType.tp_basicsize = pytalloc_BaseObject_size();
 
-	if (PyType_Ready(&dcerpc_InterfaceType) < 0)
-		return NULL;
+	py_dcerpc_ndr_pointer_type.tp_base = BaseObject_Type;
+	py_dcerpc_ndr_pointer_type.tp_basicsize = pytalloc_BaseObject_size();
 
-	if (PyType_Ready(&py_transfer_syntax_ndr_SyntaxType) < 0)
+	if (PyType_Ready(&dcerpc_InterfaceType) < 0) {
 		return NULL;
-	if (PyType_Ready(&py_transfer_syntax_ndr64_SyntaxType) < 0)
+	}
+
+	if (PyType_Ready(&py_transfer_syntax_ndr_SyntaxType) < 0) {
 		return NULL;
-	if (PyType_Ready(&py_bind_time_features_syntax_SyntaxType) < 0)
+	}
+	if (PyType_Ready(&py_transfer_syntax_ndr64_SyntaxType) < 0) {
 		return NULL;
+	}
+	if (PyType_Ready(&py_bind_time_features_syntax_SyntaxType) < 0) {
+		return NULL;
+	}
+
+	if (PyType_Ready(&py_dcerpc_ndr_pointer_type) < 0) {
+		return NULL;
+	}
 
 	m = PyModule_Create(&moduledef);
-	if (m == NULL)
+	if (m == NULL) {
 		return NULL;
+	}
 
 	Py_INCREF((PyObject *)&dcerpc_InterfaceType);
 	PyModule_AddObject(m, "ClientConnection", (PyObject *)&dcerpc_InterfaceType);
@@ -480,5 +614,7 @@ MODULE_INIT_FUNC(base)
 	PyModule_AddObject(m, "transfer_syntax_ndr64", (PyObject *)(void *)&py_transfer_syntax_ndr64_SyntaxType);
 	Py_INCREF((PyObject *)(void *)&py_bind_time_features_syntax_SyntaxType);
 	PyModule_AddObject(m, "bind_time_features_syntax", (PyObject *)(void *)&py_bind_time_features_syntax_SyntaxType);
+	Py_INCREF((PyObject *)(void *)&py_dcerpc_ndr_pointer_type);
+	PyModule_AddObject(m, "ndr_pointer", (PyObject *)(void *)&py_dcerpc_ndr_pointer_type);
 	return m;
 }

@@ -1,10 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 '''automated testing of Samba3 against windows'''
 
-import sys
-import os
-import optparse
 import wintest
 
 

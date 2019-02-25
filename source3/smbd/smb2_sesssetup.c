@@ -95,7 +95,7 @@ NTSTATUS smbd_smb2_request_process_sesssetup(struct smbd_smb2_request *smb2req)
 	in_security_buffer.length = in_security_length;
 
 	subreq = smbd_smb2_session_setup_wrap_send(smb2req,
-						   smb2req->ev_ctx,
+						   smb2req->sconn->ev_ctx,
 						   smb2req,
 						   in_session_id,
 						   in_flags,
@@ -407,6 +407,31 @@ static NTSTATUS smbd_smb2_auth_generic_return(struct smbXsrv_session *session,
 				    d->context.data, d->context.length,
 				    x->global->application_key.data);
 	}
+
+	if (xconn->protocol >= PROTOCOL_SMB3_00 && lp_debug_encryption()) {
+		DEBUG(0, ("debug encryption: dumping generated session keys\n"));
+		DEBUGADD(0, ("Session Id    "));
+		dump_data(0, (uint8_t*)&session->global->session_wire_id,
+			  sizeof(session->global->session_wire_id));
+		DEBUGADD(0, ("Session Key   "));
+		dump_data(0, session_key, sizeof(session_key));
+		DEBUGADD(0, ("Signing Key   "));
+		dump_data(0, x->global->signing_key.data,
+			  x->global->signing_key.length);
+		DEBUGADD(0, ("App Key       "));
+		dump_data(0, x->global->application_key.data,
+			  x->global->application_key.length);
+
+		/* In server code, ServerIn is the decryption key */
+
+		DEBUGADD(0, ("ServerIn Key  "));
+		dump_data(0, x->global->decryption_key.data,
+			  x->global->decryption_key.length);
+		DEBUGADD(0, ("ServerOut Key "));
+		dump_data(0, x->global->encryption_key.data,
+			  x->global->encryption_key.length);
+	}
+
 	ZERO_STRUCT(session_key);
 
 	x->global->channels[0].signing_key = data_blob_dup_talloc(x->global->channels,
@@ -525,6 +550,10 @@ static NTSTATUS smbd_smb2_reauth_generic_return(struct smbXsrv_session *session,
 
 	reload_services(smb2req->sconn, conn_snum_used, true);
 
+	if (security_session_user_level(session_info, NULL) >= SECURITY_USER) {
+		smb2req->do_signing = true;
+	}
+
 	session->status = NT_STATUS_OK;
 	TALLOC_FREE(session->global->auth_session_info);
 	session->global->auth_session_info = talloc_move(session->global,
@@ -550,10 +579,6 @@ static NTSTATUS smbd_smb2_reauth_generic_return(struct smbXsrv_session *session,
 	}
 
 	conn_clear_vuid_caches(xconn->client->sconn, session->compat->vuid);
-
-	if (security_session_user_level(session_info, NULL) >= SECURITY_USER) {
-		smb2req->do_signing = true;
-	}
 
 	*out_session_id = session->global->session_wire_id;
 
@@ -1218,7 +1243,7 @@ NTSTATUS smbd_smb2_request_process_logoff(struct smbd_smb2_request *req)
 		return smbd_smb2_request_error(req, status);
 	}
 
-	subreq = smbd_smb2_logoff_send(req, req->ev_ctx, req);
+	subreq = smbd_smb2_logoff_send(req, req->sconn->ev_ctx, req);
 	if (subreq == NULL) {
 		return smbd_smb2_request_error(req, NT_STATUS_NO_MEMORY);
 	}

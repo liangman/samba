@@ -29,17 +29,6 @@
 #undef calloc
 #undef strdup
 
-/* these are little tdb utility functions that are meant to make
-   dealing with a tdb database a little less cumbersome in Samba */
-
-int tdb_trans_store_bystring(TDB_CONTEXT *tdb, const char *keystr,
-			     TDB_DATA data, int flags)
-{
-	TDB_DATA key = string_term_tdb_data(keystr);
-
-	return tdb_trans_store(tdb, key, data, flags);
-}
-
 /****************************************************************************
  Useful pair of routines for packing/unpacking data consisting of
  integers and strings.
@@ -52,7 +41,7 @@ static size_t tdb_pack_va(uint8_t *buf, int bufsize, const char *fmt, va_list ap
 	uint32_t d;
 	int i;
 	void *p;
-	int len;
+	int len = 0;
 	char *s;
 	char c;
 	uint8_t *buf0 = buf;
@@ -87,14 +76,11 @@ static size_t tdb_pack_va(uint8_t *buf, int bufsize, const char *fmt, va_list ap
 				SIVAL(buf, 0, d);
 			break;
 		case 'P': /* null-terminated string */
-			s = va_arg(ap,char *);
-			w = strlen(s);
-			len = w + 1;
-			if (bufsize && bufsize >= len)
-				memcpy(buf, s, len);
-			break;
 		case 'f': /* null-terminated string */
 			s = va_arg(ap,char *);
+			if (s == NULL) {
+				smb_panic("Invalid argument");
+			}
 			w = strlen(s);
 			len = w + 1;
 			if (bufsize && bufsize >= len)
@@ -106,7 +92,9 @@ static size_t tdb_pack_va(uint8_t *buf, int bufsize, const char *fmt, va_list ap
 			len = 4+i;
 			if (bufsize && bufsize >= len) {
 				SIVAL(buf, 0, i);
-				memcpy(buf+4, s, i);
+				if (s != NULL) {
+					memcpy(buf+4, s, i);
+				}
 			}
 			break;
 		default:
@@ -203,9 +191,11 @@ int tdb_unpack(const uint8_t *buf, int in_bufsize, const char *fmt, ...)
 			len = strnlen((const char *)buf, bufsize) + 1;
 			if (bufsize < len)
 				goto no_space;
-			*ps = SMB_STRDUP((const char *)buf);
-			if (*ps == NULL) {
-				goto no_space;
+			if (ps != NULL) {
+				*ps = SMB_STRDUP((const char *)buf);
+				if (*ps == NULL) {
+					goto no_space;
+				}
 			}
 			break;
 		case 'f': /* null-terminated string */
@@ -213,7 +203,9 @@ int tdb_unpack(const uint8_t *buf, int in_bufsize, const char *fmt, ...)
 			len = strnlen((const char *)buf, bufsize) + 1;
 			if (bufsize < len || len > sizeof(fstring))
 				goto no_space;
-			memcpy(s, buf, len);
+			if (s != NULL) {
+				memcpy(s, buf, len);
+			}
 			break;
 		case 'B': /* fixed-length string */
 			i = va_arg(ap, uint32_t *);
@@ -232,10 +224,12 @@ int tdb_unpack(const uint8_t *buf, int in_bufsize, const char *fmt, ...)
 			}
 			if (bufsize < len)
 				goto no_space;
-			*b = (char *)SMB_MALLOC(*i);
-			if (! *b)
-				goto no_space;
-			memcpy(*b, buf+4, *i);
+			if (b != NULL) {
+				*b = (char *)SMB_MALLOC(*i);
+				if (! *b)
+					goto no_space;
+				memcpy(*b, buf+4, *i);
+			}
 			break;
 		default:
 			DEBUG(0,("Unknown tdb_unpack format %c in %s\n",
@@ -317,61 +311,6 @@ TDB_CONTEXT *tdb_open_log(const char *name, int hash_size, int tdb_flags,
 		return NULL;
 
 	return tdb;
-}
-
-/****************************************************************************
- tdb_store, wrapped in a transaction. This way we make sure that a process
- that dies within writing does not leave a corrupt tdb behind.
-****************************************************************************/
-
-int tdb_trans_store(struct tdb_context *tdb, TDB_DATA key, TDB_DATA dbuf,
-		    int flag)
-{
-	int res;
-
-	if ((res = tdb_transaction_start(tdb)) != 0) {
-		DEBUG(5, ("tdb_transaction_start failed\n"));
-		return res;
-	}
-
-	if ((res = tdb_store(tdb, key, dbuf, flag)) != 0) {
-		DEBUG(10, ("tdb_store failed\n"));
-		tdb_transaction_cancel(tdb);
-		return res;
-	}
-
-	if ((res = tdb_transaction_commit(tdb)) != 0) {
-		DEBUG(5, ("tdb_transaction_commit failed\n"));
-	}
-
-	return res;
-}
-
-/****************************************************************************
- tdb_delete, wrapped in a transaction. This way we make sure that a process
- that dies within deleting does not leave a corrupt tdb behind.
-****************************************************************************/
-
-int tdb_trans_delete(struct tdb_context *tdb, TDB_DATA key)
-{
-	int res;
-
-	if ((res = tdb_transaction_start(tdb)) != 0) {
-		DEBUG(5, ("tdb_transaction_start failed\n"));
-		return res;
-	}
-
-	if ((res = tdb_delete(tdb, key)) != 0) {
-		DEBUG(10, ("tdb_delete failed\n"));
-		tdb_transaction_cancel(tdb);
-		return res;
-	}
-
-	if ((res = tdb_transaction_commit(tdb)) != 0) {
-		DEBUG(5, ("tdb_transaction_commit failed\n"));
-	}
-
-	return res;
 }
 
 int tdb_data_cmp(TDB_DATA t1, TDB_DATA t2)

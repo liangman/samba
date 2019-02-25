@@ -105,17 +105,15 @@ const struct json_object json_empty_object = {.valid = false, .root = NULL};
  *
  * Write the json object to the audit logs as a formatted string
  *
- * @param prefix Text to be printed at the start of the log line
  * @param message The content of the log line.
  * @param debub_class The debug class to log the message with.
  * @param debug_level The debug level to log the message with.
  */
-void audit_log_json(const char* prefix,
-		    struct json_object* message,
+void audit_log_json(struct json_object* message,
 		    int debug_class,
 		    int debug_level)
 {
-	TALLOC_CTX *ctx = NULL;
+	TALLOC_CTX *frame = NULL;
 	char *s = NULL;
 
 	if (json_is_invalid(message)) {
@@ -123,17 +121,24 @@ void audit_log_json(const char* prefix,
 		return;
 	}
 
-	ctx = talloc_new(NULL);
-	s = json_to_string(ctx, message);
+	frame = talloc_stackframe();
+	s = json_to_string(frame, message);
 	if (s == NULL) {
-		DBG_ERR("json_to_string for (%s) returned NULL, "
-			"JSON audit message could not written\n",
-			prefix);
-		TALLOC_FREE(ctx);
+		DBG_ERR("json_to_string returned NULL, "
+			"JSON audit message could not written\n");
+		TALLOC_FREE(frame);
 		return;
 	}
-	DEBUGC(debug_class, debug_level, ("JSON %s: %s\n", prefix, s));
-	TALLOC_FREE(ctx);
+	/*
+	 * This is very strange, but we call this routine to get a log
+	 * output without the header.  JSON logs all have timestamps
+	 * so this only makes parsing harder.
+	 *
+	 * We push out the raw JSON blob without a prefix, consumers
+	 * can find such lines by the leading {
+	 */
+	DEBUGADDC(debug_class, debug_level, ("%s\n", s));
+	TALLOC_FREE(frame);
 }
 
 /*
@@ -237,6 +242,12 @@ void audit_message_send(
 	}
 	if (msg_ctx == NULL) {
 		DBG_DEBUG("No messaging context\n");
+		return;
+	}
+
+	ctx = talloc_new(NULL);
+	if (ctx == NULL) {
+		DBG_ERR("Out of memory creating temporary context\n");
 		return;
 	}
 
@@ -826,14 +837,14 @@ int json_add_sid(struct json_object *object,
 			return ret;
 		}
 	} else {
-		char sid_buf[DOM_SID_STR_BUFLEN];
+		struct dom_sid_buf sid_buf;
 
-		dom_sid_string_buf(sid, sid_buf, sizeof(sid_buf));
-		ret = json_add_string(object, name, sid_buf);
+		ret = json_add_string(
+			object, name, dom_sid_str_buf(sid, &sid_buf));
 		if (ret != 0) {
 			DBG_ERR("Unable to add SID [%s] value [%s]\n",
 				name,
-				sid_buf);
+				sid_buf.buf);
 			return ret;
 		}
 	}

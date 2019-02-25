@@ -117,6 +117,47 @@ class GroupCmdTestCase(SambaToolCmdTest):
             found = self.assertMatch(out, name,
                                      "group '%s' not found" % name)
 
+    def test_list_verbose(self):
+        (result, out, err) = self.runsubcmd("group", "list", "--verbose",
+                                            "-H", "ldap://%s" % os.environ["DC_SERVER"],
+                                            "-U%s%%%s" % (os.environ["DC_USERNAME"],
+                                                          os.environ["DC_PASSWORD"]))
+        self.assertCmdSuccess(result, out, err, "Error running list --verbose")
+
+        # use the output to build a dictionary, where key=group-name,
+        # value=num-members
+        output_memberships = {}
+
+        # split the output by line, skipping the first 2 header lines
+        group_lines = out.split('\n')[2:-1]
+        for line in group_lines:
+            # split line by column whitespace (but keep the group name together
+            # if it contains spaces)
+            values = line.split("   ")
+            name = values[0]
+            num_members = int(values[-1])
+            output_memberships[name] = num_members
+
+        # build up a similar dict using an LDAP search
+        search_filter = "(objectClass=group)"
+        grouplist = self.samdb.search(base=self.samdb.domain_dn(),
+                                      scope=ldb.SCOPE_SUBTREE,
+                                      expression=search_filter,
+                                      attrs=["samaccountname", "member"])
+        self.assertTrue(len(grouplist) > 0, "no groups found in samdb")
+
+        ldap_memberships = {}
+        for groupobj in grouplist:
+            name = str(groupobj.get("samaccountname", idx=0))
+            num_members = len(groupobj.get("member", default=[]))
+            ldap_memberships[name] = num_members
+
+        # check the command output matches LDAP
+        self.assertTrue(output_memberships == ldap_memberships,
+                        "Command output doesn't match LDAP results.\n" +
+                        "Command='%s'\nLDAP='%s'" %(output_memberships,
+                                                    ldap_memberships))
+
     def test_listmembers(self):
         (result, out, err) = self.runsubcmd("group", "listmembers", "Domain Users",
                                             "-H", "ldap://%s" % os.environ["DC_SERVER"],
@@ -208,3 +249,21 @@ class GroupCmdTestCase(SambaToolCmdTest):
             return grouplist[0]
         else:
             return None
+
+    def test_stats(self):
+        (result, out, err) = self.runsubcmd("group", "stats",
+                                            "-H", "ldap://%s" % os.environ["DC_SERVER"],
+                                            "-U%s%%%s" % (os.environ["DC_USERNAME"],
+                                                          os.environ["DC_PASSWORD"]))
+        self.assertCmdSuccess(result, out, err, "Error running stats")
+
+        # sanity-check the command reports 'total groups' correctly
+        search_filter = "(objectClass=group)"
+        grouplist = self.samdb.search(base=self.samdb.domain_dn(),
+                                      scope=ldb.SCOPE_SUBTREE,
+                                      expression=search_filter,
+                                      attrs=[])
+
+        total_groups = len(grouplist)
+        self.assertTrue("Total groups: {0}".format(total_groups) in out,
+                        "Total groups not reported correctly")

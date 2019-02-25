@@ -20,7 +20,8 @@
 """Tests for samba.kcc.kcc_utils"""
 import samba
 import samba.tests
-from samba.kcc.kcc_utils import *
+from samba.kcc.kcc_utils import new_connection_schedule, drsblobs
+from samba.kcc.kcc_utils import uncovered_sites_to_cover
 from samba.credentials import Credentials
 from samba.auth import system_session
 from samba.samdb import SamDB
@@ -254,7 +255,8 @@ class SiteCoverageTests(samba.tests.TestCase):
 
         self.assertEqual([], to_cover)
 
-    def test_three_site_links_different_costs(self):
+    def test_three_site_links_duplicate_costs(self):
+        # two of the links have the same cost; the other is higher
         self.samdb.transaction_start()
         site1, name1 = self._add_site(self.prefix + "ABCD")
         site2, name2 = self._add_site(self.prefix + "BCDE")

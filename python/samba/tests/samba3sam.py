@@ -55,7 +55,7 @@ class MapBaseTestCase(TestCaseInTempDir):
                  "@TO": "sambaDomainName=TESTS," + s3.basedn})
 
         ldb.add({"dn": "@MODULES",
-                 "@LIST": "rootdse,paged_results,server_sort,asq,samldb,password_hash,operational,objectguid,rdn_name,samba3sam,samba3sid,show_deleted_ignore,dsdb_flags_ignore,partition"})
+                 "@LIST": "rootdse,dsdb_paged_results,server_sort,asq,samldb,password_hash,operational,objectguid,rdn_name,samba3sam,samba3sid,show_deleted_ignore,dsdb_flags_ignore,partition"})
 
         ldb.add({"dn": "@PARTITION",
                  "partition": ["%s" % (s4.basedn_casefold),
@@ -131,7 +131,7 @@ class MapBaseTestCase(TestCaseInTempDir):
 
     def assertSidEquals(self, text, ndr_sid):
         sid_obj1 = samba.ndr.ndr_unpack(samba.dcerpc.security.dom_sid,
-                                        str(ndr_sid[0]))
+                                        ndr_sid[0])
         sid_obj2 = samba.dcerpc.security.dom_sid(text)
         self.assertEquals(sid_obj1, sid_obj2)
 
@@ -154,9 +154,9 @@ class Samba3SamTestCase(MapBaseTestCase):
         """Looking up by non-mapped attribute"""
         msg = self.ldb.search(expression="(cn=Administrator)")
         self.assertEquals(len(msg), 1)
-        self.assertEquals(msg[0]["cn"], "Administrator")
+        self.assertEquals(str(msg[0]["cn"]), "Administrator")
 
-    def test_search_non_mapped(self):
+    def test_search_mapped(self):
         """Looking up by mapped attribute"""
         msg = self.ldb.search(expression="(name=Backup Operators)")
         self.assertEquals(len(msg), 1)
@@ -177,7 +177,7 @@ class Samba3SamTestCase(MapBaseTestCase):
         self.assertSidEquals("S-1-5-21-4231626423-2410014848-2360679739-1052",
                              msg[0]["objectSid"])
         oc = set(msg[0]["objectClass"])
-        self.assertEquals(oc, set(["group"]))
+        self.assertEquals(oc, set([b"group"]))
 
     def test_search_by_objclass(self):
         """Looking up by objectClass"""
@@ -551,11 +551,11 @@ objectSid: S-1-5-21-4231626423-2410014848-2360679739-1052
         self.assertEquals(str(res[0].dn), self.samba4.dn("cn=A"))
         self.assertTrue("dnsHostName" not in res[0])
         self.assertEquals(str(res[0]["lastLogon"]), "x")
-        self.assertEquals(res[0]["objectClass"][0], "user")
+        self.assertEquals(str(res[0]["objectClass"][0]), "user")
         self.assertEquals(str(res[1].dn), self.samba4.dn("cn=B"))
         self.assertTrue("dnsHostName" not in res[1])
         self.assertEquals(str(res[1]["lastLogon"]), "y")
-        self.assertEquals(set(res[1]["objectClass"]), set(["top"]))
+        self.assertEquals(set(res[1]["objectClass"]), set([b"top"]))
         self.assertEquals(str(res[2].dn), self.samba4.dn("cn=X"))
         self.assertEquals(str(res[2]["dnsHostName"]), "x")
         self.assertEquals(str(res[2]["lastLogon"]), "x")

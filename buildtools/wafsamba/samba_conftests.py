@@ -4,7 +4,7 @@
 import os, shutil, re
 from waflib import Build, Configure, Utils, Options, Logs, Errors
 from waflib.Configure import conf
-from samba_utils import TO_LIST, ADD_LD_LIBRARY_PATH
+from samba_utils import TO_LIST, ADD_LD_LIBRARY_PATH, get_string
 
 
 def add_option(self, *k, **kw):
@@ -86,7 +86,7 @@ def CHECK_LARGEFILE(conf, define='HAVE_LARGEFILE'):
     '''see what we need for largefile support'''
     getconf_cflags = conf.CHECK_COMMAND(['getconf', 'LFS_CFLAGS']);
     if getconf_cflags is not False:
-        if (conf.CHECK_CODE('return !(sizeof(off_t) >= 8)',
+        if (conf.CHECK_CODE('if (sizeof(off_t) < 8) return 1',
                             define='WORKING_GETCONF_LFS_CFLAGS',
                             execute=True,
                             cflags=getconf_cflags,
@@ -101,13 +101,13 @@ def CHECK_LARGEFILE(conf, define='HAVE_LARGEFILE'):
                     else:
                         conf.DEFINE(flag_split[0], flag_split[1])
 
-    if conf.CHECK_CODE('return !(sizeof(off_t) >= 8)',
+    if conf.CHECK_CODE('if (sizeof(off_t) < 8) return 1',
                        define,
                        execute=True,
                        msg='Checking for large file support without additional flags'):
         return True
 
-    if conf.CHECK_CODE('return !(sizeof(off_t) >= 8)',
+    if conf.CHECK_CODE('if (sizeof(off_t) < 8) return 1',
                        define,
                        execute=True,
                        cflags='-D_FILE_OFFSET_BITS=64',
@@ -115,7 +115,7 @@ def CHECK_LARGEFILE(conf, define='HAVE_LARGEFILE'):
         conf.DEFINE('_FILE_OFFSET_BITS', 64)
         return True
 
-    if conf.CHECK_CODE('return !(sizeof(off_t) >= 8)',
+    if conf.CHECK_CODE('if (sizeof(off_t) < 8) return 1',
                        define,
                        execute=True,
                        cflags='-D_LARGE_FILES',
@@ -258,7 +258,8 @@ int foo(int v) {
     environ[0] = 1;
     ldb_module = PyImport_ImportModule("ldb");
     return v * 2;
-}'''
+}
+'''
     return conf.check(features='c cshlib',uselib='PYEMBED',fragment=snip,msg=msg, mandatory=False)
 
 # this one is quite complex, and should probably be broken up
@@ -418,7 +419,7 @@ def CHECK_COMMAND(conf, cmd, msg=None, define=None, on_target=True, boolean=Fals
     if on_target:
         cmd.extend(conf.SAMBA_CROSS_ARGS(msg=msg))
     try:
-        ret = Utils.cmd_output(cmd)
+        ret = get_string(Utils.cmd_output(cmd))
     except:
         conf.COMPOUND_END(False)
         return False
@@ -463,7 +464,7 @@ def CHECK_INLINE(conf):
         ret = conf.CHECK_CODE('''
         typedef int foo_t;
         static %s foo_t static_foo () {return 0; }
-        %s foo_t foo () {return 0; }''' % (i, i),
+        %s foo_t foo () {return 0; }\n''' % (i, i),
                               define='INLINE_MACRO',
                               addmain=False,
                               link=False)
@@ -508,7 +509,7 @@ def CHECK_STANDARD_LIBPATH(conf):
     # at least gcc and clang support this:
     try:
         cmd = conf.env.CC + ['-print-search-dirs']
-        out = Utils.cmd_output(cmd).decode('utf8').split('\n')
+        out = get_string(Utils.cmd_output(cmd)).split('\n')
     except ValueError:
         # option not supported by compiler - use a standard list of directories
         dirlist = [ '/usr/lib', '/usr/lib64' ]

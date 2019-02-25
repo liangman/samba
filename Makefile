@@ -1,8 +1,7 @@
 # simple makefile wrapper to run waf
 
-PYTHON?=python
 WAF_BINARY=$(PYTHON) ./buildtools/bin/waf
-WAF=WAF_MAKE=1 $(WAF_BINARY)
+WAF=PYTHONHASHSEED=1 WAF_MAKE=1 $(WAF_BINARY)
 
 all:
 	$(WAF) build
@@ -40,6 +39,9 @@ randomized-test:
 
 testlist:
 	$(WAF) test --list $(TEST_OPTIONS)
+
+test-nopython:
+	$(WAF) test --no-subunit-filter --test-list=selftest/no-python-tests.txt $(TEST_OPTIONS)
 
 dist:
 	touch .tmplock

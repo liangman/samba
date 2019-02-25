@@ -125,7 +125,7 @@ NTSTATUS smbd_smb2_request_process_query_directory(struct smbd_smb2_request *req
 		return smbd_smb2_request_error(req, NT_STATUS_FILE_CLOSED);
 	}
 
-	subreq = smbd_smb2_query_directory_send(req, req->ev_ctx,
+	subreq = smbd_smb2_query_directory_send(req, req->sconn->ev_ctx,
 				     req, in_fsp,
 				     in_file_info_class,
 				     in_flags,
@@ -208,7 +208,7 @@ static NTSTATUS fetch_write_time_recv(struct tevent_req *req);
 
 static struct tevent_req *fetch_dos_mode_send(
 	TALLOC_CTX *mem_ctx,
-	struct smb_vfs_ev_glue *evg,
+	struct tevent_context *ev,
 	struct files_struct *dir_fsp,
 	struct smb_filename **smb_fname,
 	uint32_t info_level,
@@ -217,7 +217,6 @@ static struct tevent_req *fetch_dos_mode_send(
 static NTSTATUS fetch_dos_mode_recv(struct tevent_req *req);
 
 struct smbd_smb2_query_directory_state {
-	struct smb_vfs_ev_glue *evg;
 	struct tevent_context *ev;
 	struct smbd_smb2_request *smb2req;
 	uint64_t async_sharemode_count;
@@ -240,7 +239,6 @@ struct smbd_smb2_query_directory_state {
 	bool async_dosmode;
 	bool async_ask_sharemode;
 	int last_entry_off;
-	struct pthreadpool_tevent *tp_chdir_safe;
 	size_t max_async_dosmode_active;
 	uint32_t async_dosmode_active;
 	bool done;
@@ -277,9 +275,7 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 	if (req == NULL) {
 		return NULL;
 	}
-	state->evg = conn->user_vfs_evg;
 	state->ev = ev;
-	state->tp_chdir_safe = smb_vfs_ev_glue_tp_chdir_safe(state->evg);
 	state->fsp = fsp;
 	state->smb2req = smb2req;
 	state->in_output_buffer_length = in_output_buffer_length;
@@ -428,6 +424,7 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 				conn,
 				fullpath,
 				ucf_flags,
+				NULL,
 				&wcard_has_wild,
 				&smb_fname);
 
@@ -505,11 +502,9 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 	 * handling in future.
 	 */
 	if (state->info_level != SMB_FIND_FILE_NAMES_INFO) {
-		state->ask_sharemode = lp_parm_bool(
-			SNUM(conn), "smbd", "search ask sharemode", true);
+		state->ask_sharemode = lp_smbd_search_ask_sharemode(SNUM(conn));
 
-		state->async_dosmode = lp_parm_bool(
-                        SNUM(conn), "smbd", "async dosmode", false);
+		state->async_dosmode = lp_smbd_async_dosmode(SNUM(conn));
 	}
 
 	if (state->ask_sharemode && lp_clustering()) {
@@ -520,14 +515,15 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
 	if (state->async_dosmode) {
 		size_t max_threads;
 
-		max_threads = pthreadpool_tevent_max_threads(state->tp_chdir_safe);
+		max_threads = pthreadpool_tevent_max_threads(conn->sconn->pool);
+		if (max_threads == 0 || !per_thread_cwd_supported()) {
+			state->async_dosmode = false;
+		}
 
-		state->max_async_dosmode_active = lp_parm_ulong(
-			SNUM(conn), "smbd", "max async dosmode",
-			max_threads * 2);
-
+		state->max_async_dosmode_active = lp_smbd_max_async_dosmode(
+							SNUM(conn));
 		if (state->max_async_dosmode_active == 0) {
-			state->max_async_dosmode_active = 1;
+			state->max_async_dosmode_active = max_threads * 2;
 		}
 	}
 
@@ -652,7 +648,7 @@ static bool smb2_query_directory_next_entry(struct tevent_req *req)
 		buf = (uint8_t *)state->base_data + state->last_entry_off;
 
 		subreq = fetch_dos_mode_send(state,
-					     state->evg,
+					     state->ev,
 					     state->fsp,
 					     &smb_fname,
 					     state->info_level,
@@ -667,7 +663,7 @@ static bool smb2_query_directory_next_entry(struct tevent_req *req)
 		state->async_dosmode_active++;
 
 		outstanding_aio = pthreadpool_tevent_queued_jobs(
-					state->tp_chdir_safe);
+					state->fsp->conn->sconn->pool);
 
 		if (outstanding_aio > state->max_async_dosmode_active) {
 			stop = true;
@@ -734,6 +730,13 @@ static void smb2_query_directory_fetch_write_time_done(struct tevent_req *subreq
 	struct smbd_smb2_query_directory_state *state = tevent_req_data(
 		req, struct smbd_smb2_query_directory_state);
 	NTSTATUS status;
+	bool ok;
+
+	/*
+	 * Make sure we run as the user again
+	 */
+	ok = change_to_user_by_fsp(state->fsp);
+	SMB_ASSERT(ok);
 
 	state->async_sharemode_count--;
 
@@ -756,6 +759,13 @@ static void smb2_query_directory_dos_mode_done(struct tevent_req *subreq)
 		tevent_req_data(req,
 		struct smbd_smb2_query_directory_state);
 	NTSTATUS status;
+	bool ok;
+
+	/*
+	 * Make sure we run as the user again
+	 */
+	ok = change_to_user_by_fsp(state->fsp);
+	SMB_ASSERT(ok);
 
 	status = fetch_dos_mode_recv(subreq);
 	TALLOC_FREE(subreq);
@@ -969,13 +979,12 @@ static void fetch_dos_mode_done(struct tevent_req *subreq);
 
 static struct tevent_req *fetch_dos_mode_send(
 			TALLOC_CTX *mem_ctx,
-			struct smb_vfs_ev_glue *evg,
+			struct tevent_context *ev,
 			struct files_struct *dir_fsp,
 			struct smb_filename **smb_fname,
 			uint32_t info_level,
 			uint8_t *entry_marshall_buf)
 {
-	struct tevent_context *ev = smb_vfs_ev_glue_ev_ctx(evg);
 	struct tevent_req *req = NULL;
 	struct fetch_dos_mode_state *state = NULL;
 	struct tevent_req *subreq = NULL;
@@ -992,7 +1001,7 @@ static struct tevent_req *fetch_dos_mode_send(
 
 	state->smb_fname = talloc_move(state, smb_fname);
 
-	subreq = dos_mode_at_send(state, evg, dir_fsp, state->smb_fname);
+	subreq = dos_mode_at_send(state, ev, dir_fsp, state->smb_fname);
 	if (tevent_req_nomem(subreq, req)) {
 		return tevent_req_post(req, ev);
 	}

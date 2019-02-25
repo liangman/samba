@@ -19,7 +19,8 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
+from __future__ import print_function
+import sys
 import ldb
 import uuid
 
@@ -314,8 +315,13 @@ class NCReplica(NamingContext):
         # Possibly no repsFrom if this is a singleton DC
         if "repsFrom" in msg:
             for value in msg["repsFrom"]:
-                rep = RepsFromTo(self.nc_dnstr,
-                                 ndr_unpack(drsblobs.repsFromToBlob, value))
+                try:
+                    unpacked = ndr_unpack(drsblobs.repsFromToBlob, value)
+                except RuntimeError as e:
+                    print("bad repsFrom NDR: %r" % (value),
+                          file=sys.stderr)
+                    continue
+                rep = RepsFromTo(self.nc_dnstr, unpacked)
                 self.rep_repsFrom.append(rep)
 
     def commit_repsFrom(self, samdb, ro=False):
@@ -468,8 +474,13 @@ class NCReplica(NamingContext):
         # Possibly no repsTo if this is a singleton DC
         if "repsTo" in msg:
             for value in msg["repsTo"]:
-                rep = RepsFromTo(self.nc_dnstr,
-                                 ndr_unpack(drsblobs.repsFromToBlob, value))
+                try:
+                    unpacked = ndr_unpack(drsblobs.repsFromToBlob, value)
+                except RuntimeError as e:
+                    print("bad repsTo NDR: %r" % (value),
+                          file=sys.stderr)
+                    continue
+                rep = RepsFromTo(self.nc_dnstr, unpacked)
                 self.rep_repsTo.append(rep)
 
     def commit_repsTo(self, samdb, ro=False):
@@ -669,7 +680,7 @@ class DirectoryServiceAgent(object):
         if "options" in msg:
             self.options = int(msg["options"][0])
 
-        if "msDS-isRODC" in msg and msg["msDS-isRODC"][0] == "TRUE":
+        if "msDS-isRODC" in msg and str(msg["msDS-isRODC"][0]) == "TRUE":
             self.dsa_is_ro = True
         else:
             self.dsa_is_ro = False
@@ -972,7 +983,7 @@ class NTDSConnection(object):
             self.options = int(msg["options"][0])
 
         if "enabledConnection" in msg:
-            if msg["enabledConnection"][0].upper().lstrip().rstrip() == "TRUE":
+            if str(msg["enabledConnection"][0]).upper().lstrip().rstrip() == "TRUE":
                 self.enabled = True
 
         if "systemFlags" in msg:
@@ -1353,7 +1364,7 @@ class Partition(NamingContext):
                 continue
 
             if k == "Enabled":
-                if msg[k][0].upper().lstrip().rstrip() == "TRUE":
+                if str(msg[k][0]).upper().lstrip().rstrip() == "TRUE":
                     self.enabled = True
                 else:
                     self.enabled = False

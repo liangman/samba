@@ -41,7 +41,7 @@ def configure(conf):
     conf.CHECK_HEADERS('shadow.h sys/acl.h')
     conf.CHECK_HEADERS('sys/attributes.h attr/attributes.h sys/capability.h sys/dir.h sys/epoll.h')
     conf.CHECK_HEADERS('port.h')
-    conf.CHECK_HEADERS('sys/fcntl.h sys/filio.h sys/filsys.h sys/fs/s5param.h sys/fs/vx/quota.h')
+    conf.CHECK_HEADERS('sys/fcntl.h sys/filio.h sys/filsys.h sys/fs/s5param.h')
     conf.CHECK_HEADERS('sys/id.h sys/ioctl.h sys/ipc.h sys/mman.h sys/mode.h sys/ndir.h sys/priv.h')
     conf.CHECK_HEADERS('sys/resource.h sys/security.h sys/shm.h sys/statfs.h sys/statvfs.h sys/termio.h')
     conf.CHECK_HEADERS('sys/vfs.h sys/xattr.h termio.h termios.h sys/file.h')
@@ -426,6 +426,7 @@ def configure(conf):
     conf.CHECK_FUNCS('getgrent_r getgrgid_r getgrnam_r getgrouplist getpagesize')
     conf.CHECK_FUNCS('getpwent_r getpwnam_r getpwuid_r epoll_create')
     conf.CHECK_FUNCS('port_create')
+    conf.CHECK_FUNCS('getprogname')
 
     conf.SET_TARGET_TYPE('attr', 'EMPTY')
 
@@ -606,12 +607,14 @@ def configure(conf):
 
     conf.CHECK_VARIABLE('rl_event_hook', define='HAVE_DECL_RL_EVENT_HOOK', always=True,
                         headers='readline.h readline/readline.h readline/history.h')
+    conf.CHECK_VARIABLE('program_invocation_short_name', headers='errno.h')
 
     conf.CHECK_DECLS('snprintf vsnprintf asprintf vasprintf')
 
     conf.CHECK_DECLS('errno', headers='errno.h', reverse=True)
     conf.CHECK_DECLS('EWOULDBLOCK', headers='errno.h')
-    conf.CHECK_DECLS('environ getgrent_r getpwent_r', reverse=True, headers='pwd.h grp.h')
+    conf.CHECK_DECLS('environ', reverse=True, headers='unistd.h')
+    conf.CHECK_DECLS('getgrent_r getpwent_r', reverse=True, headers='pwd.h grp.h')
     conf.CHECK_DECLS('pread pwrite setenv setresgid setresuid', reverse=True)
 
     if conf.CONFIG_SET('HAVE_EPOLL_CREATE') and conf.CONFIG_SET('HAVE_SYS_EPOLL_H'):
@@ -788,7 +791,7 @@ REPLACEMENT_FUNCTIONS = {
                   'utime', 'utimes', 'dup2', 'chown', 'link', 'readlink',
                   'symlink', 'lchown', 'realpath', 'memmem', 'vdprintf',
                   'dprintf', 'get_current_dir_name',
-                  'strerror_r', 'clock_gettime'],
+                  'strerror_r', 'clock_gettime', 'memset_s'],
     'timegm.c': ['timegm'],
     # Note: C99_VSNPRINTF is not a function, but a special condition
     # for replacement
@@ -854,7 +857,7 @@ def build(bld):
                       private_library=True,
                       deps='crypt dl nsl socket rt attr' + extra_libs)
 
-    replace_test_cflags="-Wno-format-zero-length"
+    replace_test_cflags = ''
     if bld.CONFIG_SET('HAVE_WNO_FORMAT_TRUNCATION'):
         replace_test_cflags += " -Wno-format-truncation"
     bld.SAMBA_SUBSYSTEM('replace-test',

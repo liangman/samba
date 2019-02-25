@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Tests for truncated index keys
 #
@@ -1313,7 +1313,6 @@ class RejectSubDBIndex(LdbBaseTest):
         try:
             self.l.add({"dn": "@INDEXLIST",
                         "@IDX_LMDB_SUBDB": [b"1"],
-                        "@IDXONE": [b"1"],
                         "@IDXONE": [b"1"],
                         "@IDXGUID": [b"objectUUID"],
                         "@IDX_DN_GUID": [b"GUID"],

@@ -264,7 +264,7 @@ uint32_t dos_mode_msdfs(connection_struct *conn,
 		      const struct smb_filename *smb_fname);
 uint32_t dos_mode(connection_struct *conn, struct smb_filename *smb_fname);
 struct tevent_req *dos_mode_at_send(TALLOC_CTX *mem_ctx,
-				    struct smb_vfs_ev_glue *evg,
+				    struct tevent_context *ev,
 				    files_struct *dir_fsp,
 				    struct smb_filename *smb_fname);
 NTSTATUS dos_mode_at_recv(struct tevent_req *req, uint32_t *dosmode);
@@ -365,6 +365,7 @@ NTSTATUS filename_convert(TALLOC_CTX *mem_ctx,
 			connection_struct *conn,
 			const char *name_in,
 			uint32_t ucf_flags,
+			time_t *twrp,
 			bool *ppath_contains_wcard,
 			struct smb_filename **pp_smb_fname);
 NTSTATUS filename_convert_with_privilege(TALLOC_CTX *mem_ctx,
@@ -1210,12 +1211,6 @@ void reply_transs2(struct smb_request *req);
 
 /* The following definitions come from smbd/uid.c  */
 
-#define smbd_impersonate_debug_create(main_ev, name, dbg_lvl) \
-	_smbd_impersonate_debug_create(main_ev, name, dbg_lvl, __location__)
-struct tevent_context *_smbd_impersonate_debug_create(struct tevent_context *main_ev,
-						      const char *name,
-						      int dbg_lvl,
-						      const char *location);
 bool change_to_guest(void);
 NTSTATUS check_user_share_access(connection_struct *conn,
 				const struct auth_session_info *session_info,
@@ -1230,8 +1225,6 @@ void become_root(void);
 void unbecome_root(void);
 void smbd_become_root(void);
 void smbd_unbecome_root(void);
-bool become_guest(void);
-void unbecome_guest(void);
 bool become_user(connection_struct *conn, uint64_t vuid);
 bool become_user_by_fsp(struct files_struct *fsp);
 bool become_user_by_session(connection_struct *conn,
@@ -1242,30 +1235,6 @@ gid_t get_current_gid(connection_struct *conn);
 const struct security_unix_token *get_current_utok(connection_struct *conn);
 const struct security_token *get_current_nttok(connection_struct *conn);
 uint64_t get_current_vuid(connection_struct *conn);
-
-struct tevent_context *smbd_impersonate_conn_vuid_create(
-				struct tevent_context *main_ev,
-				struct connection_struct *conn,
-				uint64_t vuid);
-struct tevent_context *smbd_impersonate_conn_sess_create(
-				struct tevent_context *main_ev,
-				struct connection_struct *conn,
-				struct auth_session_info *session_info);
-struct tevent_context *smbd_impersonate_root_create(struct tevent_context *main_ev);
-struct tevent_context *smbd_impersonate_guest_create(struct tevent_context *main_ev);
-
-struct pthreadpool_tevent *smbd_impersonate_tp_current_create(
-				TALLOC_CTX *mem_ctx,
-				struct pthreadpool_tevent *sync_tp,
-				struct connection_struct *conn,
-				uint64_t vuid, bool chdir_safe,
-				const struct security_unix_token *unix_token);
-struct pthreadpool_tevent *smbd_impersonate_tp_become_create(
-					TALLOC_CTX *mem_ctx,
-					struct pthreadpool_tevent *sync_tp,
-					bool chdir_safe,
-					void (*become_fn)(void),
-					void (*unbecome_fn)(void));
 
 /* The following definitions come from smbd/utmp.c  */
 

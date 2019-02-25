@@ -178,6 +178,7 @@ bld.SAMBA3_SUBSYSTEM('pdb',
                         LIBCLI_AUTH
                         flag_mapping
                         samba-credentials
+                        nscd
                         ''')
 
 bld.SAMBA3_LIBRARY('smbldaphelper',
@@ -302,7 +303,6 @@ bld.SAMBA3_SUBSYSTEM('samba3util',
                           lib/util_sock.c
                           lib/util_tsock.c
                           lib/util_transfer_file.c
-                          lib/sys_popen.c
                           ''',
                    deps='''
                         CHARSET3
@@ -611,6 +611,7 @@ bld.SAMBA3_SUBSYSTEM('sysquotas',
                         lib/sysquotas_xfs.c
                         lib/sysquotas_4A.c
                         lib/sysquotas_4B.c
+                        lib/sysquotas_jfs2.c
                         lib/sysquotas_nfs.c
                      ''',
                      allow_warnings=True,
@@ -968,6 +969,7 @@ bld.SAMBA3_LIBRARY('samba3-util',
                           lib/namearray.c
                           lib/file_id.c
                           lib/cbuf.c
+                          lib/per_thread_cwd.c
                           ''',
                    deps='''
                         samba-util
@@ -1196,6 +1198,7 @@ bld.SAMBA3_BINARY('smbtorture' + bld.env.suffix3,
                         torture/wbc_async.c
                         torture/test_g_lock.c
                         torture/test_namemap_cache.c
+                        torture/test_hidenewfiles.c
                         ''',
                  deps='''
                       talloc

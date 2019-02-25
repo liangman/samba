@@ -25,7 +25,23 @@
  *
  *  Component: ldb linked_attributes module
  *
- *  Description: Module to ensure linked attribute pairs remain in sync
+ *  Description: Module to ensure linked attribute pairs (i.e. forward-links
+ *  and backlinks) remain in sync.
+ *
+ *  Backlinks are 'plain' links (without extra metadata). When the link target
+ *  object is modified (e.g. renamed), we use the backlinks to keep the link
+ *  source object updated. Note there are some cases where we can't do this:
+ *    - one-way links, which don't have a corresponding backlink
+ *    - two-way deactivated links, i.e. when a user is removed from a group,
+ *      the forward 'member' link still exists (but is inactive), however, the
+ *      'memberOf' backlink is deleted.
+ *  In these cases, we can end up with a dangling forward link which is
+ *  incorrect (i.e. the target has been renamed or deleted). We have dbcheck
+ *  rules to detect and fix this, and cope otherwise by filtering at runtime
+ *  (i.e. in the extended_dn module).
+ *
+ *  See also repl_meta_data.c, which handles updating links for deleted
+ *  objects, as well as link changes received from another DC.
  *
  *  Author: Andrew Bartlett
  */
@@ -679,7 +695,7 @@ static int linked_attributes_fix_links(struct ldb_module *module,
 				       struct ldb_request *parent)
 {
 	unsigned int i, j;
-	TALLOC_CTX *tmp_ctx = talloc_new(module);
+	TALLOC_CTX *tmp_ctx = NULL;
 	struct ldb_context *ldb = ldb_module_get_ctx(module);
 	const struct dsdb_attribute *target;
 	const char *attrs[2];
@@ -691,6 +707,11 @@ static int linked_attributes_fix_links(struct ldb_module *module,
 		return LDB_SUCCESS;
 	}
 
+	tmp_ctx = talloc_new(module);
+	if (tmp_ctx == NULL) {
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+
 	attrs[0] = target->lDAPDisplayName;
 	attrs[1] = NULL;
 
@@ -700,6 +721,7 @@ static int linked_attributes_fix_links(struct ldb_module *module,
 		struct ldb_message *msg;
 		struct ldb_message_element *el2;
 		struct GUID link_guid;
+		char *link_guid_str = NULL;
 
 		dsdb_dn = dsdb_dn_parse(tmp_ctx, ldb, &el->values[i], schema_attr->syntax->ldap_oid);
 		if (dsdb_dn == NULL) {
@@ -718,11 +740,18 @@ static int linked_attributes_fix_links(struct ldb_module *module,
 			return ret;
 		}
 
+		link_guid_str = GUID_string(tmp_ctx, &link_guid);
+		if (link_guid_str == NULL) {
+			talloc_free(tmp_ctx);
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+
 		/*
 		 * get the existing message from the db for the object with
 		 * this GUID, returning attribute being modified. We will then
 		 * use this msg as the basis for a modify call
 		 */
+
 		ret = dsdb_module_search(module, tmp_ctx, &res, NULL, LDB_SCOPE_SUBTREE, attrs,
 					 DSDB_FLAG_NEXT_MODULE |
 					 DSDB_SEARCH_SEARCH_ALL_PARTITIONS |
@@ -730,13 +759,13 @@ static int linked_attributes_fix_links(struct ldb_module *module,
 					 DSDB_SEARCH_SHOW_DN_IN_STORAGE_FORMAT |
 					 DSDB_SEARCH_REVEAL_INTERNALS,
 					 parent,
-					 "objectGUID=%s", GUID_string(tmp_ctx, &link_guid));
+					 "objectGUID=%s", link_guid_str);
 		if (ret != LDB_SUCCESS) {
 			ldb_asprintf_errstring(ldb, "Linked attribute %s->%s between %s and %s - target GUID %s not found - %s",
 					       el->name, target->lDAPDisplayName,
 					       ldb_dn_get_linearized(old_dn),
 					       ldb_dn_get_linearized(dsdb_dn->dn),
-					       GUID_string(tmp_ctx, &link_guid),
+					       link_guid_str,
 					       ldb_errstring(ldb));
 			talloc_free(tmp_ctx);
 			return ret;
@@ -750,7 +779,7 @@ static int linked_attributes_fix_links(struct ldb_module *module,
 					       el->name, target->lDAPDisplayName,
 					       ldb_dn_get_linearized(old_dn),
 					       ldb_dn_get_linearized(dsdb_dn->dn),
-					       GUID_string(tmp_ctx, &link_guid));
+					       link_guid_str);
 			talloc_free(tmp_ctx);
 			return LDB_ERR_OPERATIONS_ERROR;
 		}

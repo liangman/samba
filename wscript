@@ -55,6 +55,14 @@ def options(opt):
                    help='build Samba with system MIT Kerberos. ' +
                         'You may specify list of paths where Kerberos is installed (e.g. /usr/local /usr/kerberos) to search krb5-config',
                    action='callback', callback=system_mitkrb5_callback, dest='with_system_mitkrb5', default=False)
+
+    opt.add_option('--with-experimental-mit-ad-dc',
+                   help='Enable the experimental MIT Kerberos-backed AD DC.  ' +
+                   'Note that security patches are not issued for this configuration',
+                   action='store_true',
+                   dest='with_experimental_mit_ad_dc',
+                   default=False)
+
     opt.add_option('--with-system-mitkdc',
                    help=('Specify the path to the krb5kdc binary from MIT Kerberos'),
                    type="string",
@@ -214,29 +222,35 @@ def configure(conf):
         conf.DEFINE('AD_DC_BUILD_IS_ENABLED', 1)
 
     if Options.options.with_system_mitkrb5:
+        if not Options.options.with_experimental_mit_ad_dc and \
+           not Options.options.without_ad_dc:
+            raise Errors.WafError('The MIT Kerberos build of Samba as an AD DC ' +
+                                  'is experimental. Therefore '
+                                  '--with-system-mitkrb5 requires either ' +
+                                  '--with-experimental-mit-ad-dc or ' +
+                                  '--without-ad-dc')
+
         conf.PROCESS_SEPARATE_RULE('system_mitkrb5')
+
     if not (Options.options.without_ad_dc or Options.options.with_system_mitkrb5):
         conf.DEFINE('AD_DC_BUILD_IS_ENABLED', 1)
 
     if Options.options.with_system_heimdalkrb5:
         if Options.options.with_system_mitkrb5:
-            raise Utils.WafError('--with-system-heimdalkrb5 conflicts with ' +
-                                 '--with-system-mitkrb5')
+            raise Errors.WafError('--with-system-heimdalkrb5 conflicts with ' +
+                                  '--with-system-mitkrb5')
         if not Options.options.without_ad_dc:
-            raise Utils.WafError('--with-system-heimdalkrb5 requires ' +
-                                 '--without-ad-dc')
+            raise Errors.WafError('--with-system-heimdalkrb5 requires ' +
+                                  '--without-ad-dc')
         conf.env.SYSTEM_LIBS += ('heimdal', 'asn1', 'com_err', 'roken',
                                  'hx509', 'wind', 'gssapi', 'hcrypto',
                                  'krb5', 'heimbase', 'asn1_compile',
                                  'compile_et', 'kdc', 'hdb', 'heimntlm')
+        conf.PROCESS_SEPARATE_RULE('system_heimdal')
 
-    # Only process heimdal_build for non-MIT KRB5 builds
-    # When MIT KRB5 checks are done as above, conf.env.KRB5_VENDOR will be set
-    # to the lowcased output of 'krb5-config --vendor'.
-    # If it is not set or the output is 'heimdal', we are dealing with
-    # system-provided or embedded Heimdal build
-    if conf.CONFIG_GET('KRB5_VENDOR') in (None, 'heimdal'):
-        conf.RECURSE('source4/heimdal_build')
+    if not conf.CONFIG_GET('KRB5_VENDOR'):
+        conf.PROCESS_SEPARATE_RULE('embedded_heimdal')
+
     conf.RECURSE('source4/lib/tls')
     conf.RECURSE('source4/dsdb/samdb/ldb_modules')
     conf.RECURSE('source4/ntvfs/sysdep')
@@ -262,18 +276,10 @@ def configure(conf):
         conf.DEFINE('WITH_NTVFS_FILESERVER', 1)
 
     if Options.options.with_pthreadpool:
-        if conf.CONFIG_SET('HAVE_PTHREAD') and \
-           conf.CONFIG_SET('HAVE___THREAD') and \
-           conf.CONFIG_SET('HAVE_ATOMIC_THREAD_FENCE_SUPPORT'):
+        if conf.CONFIG_SET('HAVE_PTHREAD'):
             conf.DEFINE('WITH_PTHREADPOOL', '1')
         else:
-            if not conf.CONFIG_SET('HAVE_PTHREAD'):
-                Logs.warn("pthreadpool support cannot be enabled when pthread support was not found")
-            if not conf.CONFIG_SET('HAVE_ATOMIC_THREAD_FENCE_SUPPORT'):
-                Logs.warn("""pthreadpool support cannot be enabled when there is
-                          no support for atomic_thead_fence()""")
-            if not conf.CONFIG_SET('HAVE___THREAD'):
-                Logs.warn("pthreadpool support cannot be enabled when __thread support was not found")
+            Logs.warn("pthreadpool support cannot be enabled when pthread support was not found")
             conf.undefine('WITH_PTHREADPOOL')
 
     conf.SET_TARGET_TYPE('jansson', 'EMPTY')

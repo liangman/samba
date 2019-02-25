@@ -40,7 +40,6 @@ import logging
 import time
 import uuid
 import socket
-import string
 import tempfile
 import samba.dsdb
 
@@ -78,7 +77,6 @@ from samba.ms_display_specifiers import read_ms_ldif
 from samba.ntacls import setntacl, getntacl, dsacl2fsacl
 from samba.ndr import ndr_pack, ndr_unpack
 from samba.provision.backend import (
-    ExistingBackend,
     FDSBackend,
     LDBBackend,
     OpenLDAPBackend,
@@ -220,8 +218,8 @@ def find_provision_key_parameters(samdb, secretsdb, idmapdb, paths, smbconf,
                                   "configurationNamingContext", "rootDomainNamingContext",
                                   "namingContexts"])
 
-    names.configdn = current[0]["configurationNamingContext"][0]
-    names.schemadn = current[0]["schemaNamingContext"][0]
+    names.configdn = str(current[0]["configurationNamingContext"][0])
+    names.schemadn = str(current[0]["schemaNamingContext"][0])
     if not (ldb.Dn(samdb, basedn) == (ldb.Dn(samdb,
                                              current[0]["defaultNamingContext"][0].decode('utf8')))):
         raise ProvisioningError(("basedn in %s (%s) and from %s (%s)"
@@ -229,14 +227,14 @@ def find_provision_key_parameters(samdb, secretsdb, idmapdb, paths, smbconf,
                                                           str(current[0]["defaultNamingContext"][0].decode('utf8')),
                                                           paths.smbconf, basedn)))
 
-    names.domaindn = current[0]["defaultNamingContext"][0]
-    names.rootdn = current[0]["rootDomainNamingContext"][0]
+    names.domaindn = str(current[0]["defaultNamingContext"][0])
+    names.rootdn = str(current[0]["rootDomainNamingContext"][0])
     names.ncs = current[0]["namingContexts"]
     names.dnsforestdn = None
     names.dnsdomaindn = None
 
     for i in range(0, len(names.ncs)):
-        nc = names.ncs[i]
+        nc = str(names.ncs[i])
 
         dnsforestdn = "DC=ForestDnsZones,%s" % (str(names.rootdn))
         if nc == dnsforestdn:
@@ -307,8 +305,8 @@ def find_provision_key_parameters(samdb, secretsdb, idmapdb, paths, smbconf,
                           attrs=["xidNumber", "type"])
     if len(res9) != 1:
         raise ProvisioningError("Unable to find uid/gid for Domain Admins rid (%s-%s" % (str(names.domainsid), security.DOMAIN_RID_ADMINISTRATOR))
-    if res9[0]["type"][0] == "ID_TYPE_BOTH":
-        names.root_gid = res9[0]["xidNumber"][0]
+    if str(res9[0]["type"][0]) == "ID_TYPE_BOTH":
+        names.root_gid = int(res9[0]["xidNumber"][0])
     else:
         names.root_gid = pwd.getpwuid(int(res9[0]["xidNumber"][0])).pw_gid
 
@@ -366,8 +364,8 @@ def update_provision_usn(samdb, low, high, id, replace=False):
                              scope=ldb.SCOPE_BASE,
                              attrs=[LAST_PROVISION_USN_ATTRIBUTE, "dn"])
         for e in entry[0][LAST_PROVISION_USN_ATTRIBUTE]:
-            if not re.search(';', e):
-                e = "%s;%s" % (e, id)
+            if not re.search(';', str(e)):
+                e = "%s;%s" % (str(e), id)
             tab.append(str(e))
 
     tab.append("%s-%s;%s" % (low, high, id))
@@ -616,7 +614,9 @@ def guess_names(lp=None, hostname=None, domain=None, dnsdomain=None,
     if dnsdomain is None:
         dnsdomain = lp.get("realm")
         if dnsdomain is None or dnsdomain == "":
-            raise ProvisioningError("guess_names: 'realm' not specified in supplied %s!", lp.configfile)
+            raise ProvisioningError(
+                "guess_names: 'realm' not specified in supplied %s!" %
+                lp.configfile)
 
     dnsdomain = dnsdomain.lower()
 
@@ -1751,7 +1751,9 @@ def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
             fsacl = getntacl(lp, os.path.join(root, name),
                              direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
             if fsacl is None:
-                raise ProvisioningError('%s ACL on GPO file %s %s not found!' % (acl_type(direct_db_access), os.path.join(root, name)))
+                raise ProvisioningError('%s ACL on GPO file %s not found!' %
+                                        (acl_type(direct_db_access),
+                                         os.path.join(root, name)))
             fsacl_sddl = fsacl.as_sddl(domainsid)
             if fsacl_sddl != acl:
                 raise ProvisioningError('%s ACL on GPO file %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), os.path.join(root, name), fsacl_sddl, acl))
@@ -1760,7 +1762,9 @@ def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
             fsacl = getntacl(lp, os.path.join(root, name),
                              direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
             if fsacl is None:
-                raise ProvisioningError('%s ACL on GPO directory %s %s not found!' % (acl_type(direct_db_access), os.path.join(root, name)))
+                raise ProvisioningError('%s ACL on GPO directory %s not found!'
+                                        % (acl_type(direct_db_access),
+                                           os.path.join(root, name)))
             fsacl_sddl = fsacl.as_sddl(domainsid)
             if fsacl_sddl != acl:
                 raise ProvisioningError('%s ACL on GPO directory %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), os.path.join(root, name), fsacl_sddl, acl))
@@ -2238,13 +2242,6 @@ def provision(logger, session_info, smbconf=None,
         provision_backend = LDBBackend(backend_type, paths=paths,
                                        lp=lp,
                                        names=names, logger=logger)
-    elif backend_type == "existing":
-        # If support for this is ever added back, then the URI will need to be
-        # specified again
-        provision_backend = ExistingBackend(backend_type, paths=paths,
-                                            lp=lp,
-                                            names=names, logger=logger,
-                                            ldap_backend_forced_uri=ldap_backend_forced_uri)
     elif backend_type == "fedora-ds":
         provision_backend = FDSBackend(backend_type, paths=paths,
                                        lp=lp,

@@ -23,7 +23,7 @@
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
 
-#if HAVE_KERNEL_OPLOCKS_LINUX
+#ifdef HAVE_KERNEL_OPLOCKS_LINUX
 
 #ifndef F_SETLEASE
 #define F_SETLEASE	1024
@@ -124,12 +124,6 @@ static void linux_oplock_signal_handler(struct tevent_context *ev_ctx,
 	siginfo_t *info = (siginfo_t *)_info;
 	int fd = info->si_fd;
 	files_struct *fsp;
-
-	/*
-	 * This function doesn't expect any specific impersonation, as it only
-	 * sends messages to other smbd processes. And messaging_send_iov_from()
-	 * already handles EACCES.
-	 */
 
 	fsp = file_find_fd(sconn, fd);
 	if (fsp == NULL) {
@@ -241,13 +235,7 @@ struct kernel_oplocks *linux_init_kernel_oplocks(struct smbd_server_connection *
 	ctx->ops = &linux_koplocks;
 	ctx->private_data = sconn;
 
-	/*
-	 * linux_oplock_signal_handler() only
-	 * sends messages to other smbd processes
-	 * and doesn't require any impersonation.
-	 * So we can just use the raw tevent_context.
-	 */
-	se = tevent_add_signal(sconn->raw_ev_ctx,
+	se = tevent_add_signal(sconn->ev_ctx,
 			       ctx,
 			       RT_SIGNAL_LEASE, SA_SIGINFO,
 			       linux_oplock_signal_handler,

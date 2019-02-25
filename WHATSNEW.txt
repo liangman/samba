@@ -1,12 +1,12 @@
 Release Announcements
 =====================
 
-This is the first preview release of Samba 4.10.  This is *not*
+This is the first preview release of Samba 4.11.  This is *not*
 intended for production environments and is designed for testing
 purposes only.  Please report any defects via the Samba bug reporting
 system at https://bugzilla.samba.org/.
 
-Samba 4.10 will be the next version of the Samba suite.
+Samba 4.11 will be the next version of the Samba suite.
 
 
 UPGRADING
@@ -16,16 +16,39 @@ UPGRADING
 NEW FEATURES/CHANGES
 ====================
 
-GPO Improvements
-----------------
+Default samba process model
+---------------------------
 
-A new 'samba-tool gpo export' command has been added that can export a
-set of Group Policy Objects from a domain in a generalised XML format.
+The default for the --model argument passed to the samba executable has changed
+from 'standard' to 'prefork'. This means a difference in the number of samba
+child processes that are created to handle client connections. The previous
+default would create a separate process for every LDAP or NETLOGON client
+connection. For a network with a lot of persistent client connections, this
+could result in significant memory overhead.  Now, with the new default of
+'prefork', the LDAP, NETLOGON, and KDC services will create a fixed number of
+worker processes at startup and share the client connections amongst these
+workers. The number of worker processes can be configured by the 'prefork
+children' setting in the smb.conf (the default is 4).
 
-A corresponding 'samba-tool gpo restore' command has been added to
-rebuild the Group Policy Objects from the XML after generalization.
-(The administrator needs to correct the values of XML entities between
-the backup and restore to account for the change in domain).
+Authentication Logging.
+-----------------------
+
+Winbind now logs PAM_AUTH and NTLM_AUTH events, a new attribute "logonId" has
+been added to the Authentication JSON log messages.  This contains a random
+logon id that is generated for each PAM_AUTH and NTLM_AUTH request and is passed
+to SamLogon, linking the windbind and SamLogon requests.
+
+The serviceDescription of the messages is set to "winbind", the authDescription
+is set to one of:
+   "PASSDB, <command>, <pid>"
+   "PAM_AUTH, <command>, <pid>"
+   "NTLM_AUTH, <command>, <pid>"
+where:
+   <command> is the name of the command makinmg the winbind request i.e. wbinfo
+   <pid>     is the process id of the requesting process.
+
+The version of the JSON Authentication messages has been changed to 1.2 from 1.1
+
 
 
 REMOVED FEATURES
@@ -35,14 +58,14 @@ REMOVED FEATURES
 smb.conf changes
 ================
 
-  Parameter Name                     Description             Default
-  --------------                     -----------             -------
+  Parameter Name                     Description                Default
+  --------------                     -----------                -------
 
 
 KNOWN ISSUES
 ============
 
-https://wiki.samba.org/index.php/Release_Planning_for_Samba_4.10#Release_blocking_bugs
+https://wiki.samba.org/index.php/Release_Planning_for_Samba_4.11#Release_blocking_bugs
 
 
 #######################################

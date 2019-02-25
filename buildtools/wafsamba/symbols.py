@@ -59,12 +59,12 @@ def symbols_extract(bld, objfiles, dynamic=False):
 
     for line in nmpipe:
         line = line.strip()
-        if line.endswith(':'):
+        if line.endswith(b':'):
             filename = line[:-1]
             ret[filename] = { "PUBLIC": set(), "UNDEFINED" : set() }
             continue
-        cols = line.split(" ")
-        if cols == ['']:
+        cols = line.split(b" ")
+        if cols == [b'']:
             continue
         # see if the line starts with an address
         if len(cols) == 3:
@@ -73,10 +73,10 @@ def symbols_extract(bld, objfiles, dynamic=False):
         else:
             symbol_type = cols[0]
             symbol = cols[1]
-        if symbol_type in "BDGTRVWSi":
+        if symbol_type in b"BDGTRVWSi":
             # its a public symbol
             ret[filename]["PUBLIC"].add(symbol)
-        elif symbol_type in "U":
+        elif symbol_type in b"U":
             ret[filename]["UNDEFINED"].add(symbol)
 
     # add to the cache
@@ -106,10 +106,10 @@ def find_ldd_path(bld, libname, binary):
     lddpipe = subprocess.Popen(['ldd', binary], stdout=subprocess.PIPE).stdout
     for line in lddpipe:
         line = line.strip()
-        cols = line.split(" ")
-        if len(cols) < 3 or cols[1] != "=>":
+        cols = line.split(b" ")
+        if len(cols) < 3 or cols[1] != b"=>":
             continue
-        if cols[0].startswith("libc."):
+        if cols[0].startswith(b"libc."):
             # save this one too
             bld.env.libc_path = cols[2]
         if cols[0].startswith(libname):
@@ -119,8 +119,9 @@ def find_ldd_path(bld, libname, binary):
 
 
 # some regular expressions for parsing readelf output
-re_sharedlib = re.compile('Shared library: \[(.*)\]')
-re_rpath     = re.compile('Library rpath: \[(.*)\]')
+re_sharedlib = re.compile(b'Shared library: \[(.*)\]')
+# output from readelf could be `Library rpath` or `Libray runpath`
+re_rpath     = re.compile(b'Library (rpath|runpath): \[(.*)\]')
 
 def get_libs(bld, binname):
     '''find the list of linked libraries for any binary or library
@@ -146,7 +147,8 @@ def get_libs(bld, binname):
             libs.add(m.group(1))
         m = re_rpath.search(line)
         if m:
-            rpath.extend(m.group(1).split(":"))
+            # output from Popen is always bytestr even in py3
+            rpath.extend(m.group(2).split(b":"))
 
     ret = set()
     for lib in libs:

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Unix SMB/CIFS implementation.
@@ -34,7 +34,6 @@ import samba.tests
 
 from ldb import SCOPE_BASE, LdbError
 
-import samba.tests
 import samba.dcerpc.drsuapi
 from samba.dcerpc.drsblobs import schemaInfoBlob
 from samba.ndr import ndr_unpack

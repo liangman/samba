@@ -1,9 +1,11 @@
 # a waf tool to add autoconf-like macros to the configure section
 # and for SAMBA_ macros for building libraries, binaries etc
 
+import errno
 import os, sys, re, fnmatch, shlex, inspect
 from optparse import SUPPRESS_HELP
 from waflib import Build, Options, Utils, Task, Logs, Configure, Errors, Context
+from waflib import Scripting
 from waflib.TaskGen import feature, before, after
 from waflib.Configure import ConfigurationContext
 from waflib.Logs import debug
@@ -14,9 +16,43 @@ from waflib.Build import CACHE_SUFFIX
 LIB_PATH="shared"
 
 
+PY3 = sys.version_info[0] == 3
+
+if PY3:
+
+    # helper function to get a string from a variable that maybe 'str' or
+    # 'bytes' if 'bytes' then it is decoded using 'utf8'. If 'str' is passed
+    # it is returned unchanged
+    # Using this function is PY2/PY3 code should ensure in most cases
+    # the PY2 code runs unchanged in PY2 whereas the code in PY3 possibly
+    # decodes the variable (see PY2 implementation of this function below)
+    def get_string(bytesorstring):
+        tmp = bytesorstring
+        if isinstance(bytesorstring, bytes):
+            tmp = bytesorstring.decode('utf8')
+        elif not isinstance(bytesorstring, str):
+            raise ValueError('Expected byte of string for %s:%s' % (type(bytesorstring), bytesorstring))
+        return tmp
+
+else:
+
+    # Helper function to return string.
+    # if 'str' or 'unicode' passed in they are returned unchanged
+    # otherwise an exception is generated
+    # Using this function is PY2/PY3 code should ensure in most cases
+    # the PY2 code runs unchanged in PY2 whereas the code in PY3 possibly
+    # decodes the variable (see PY3 implementation of this function above)
+    def get_string(bytesorstring):
+        tmp = bytesorstring
+        if not(isinstance(bytesorstring, str) or isinstance(bytesorstring, unicode)):
+            raise ValueError('Expected str or unicode for %s:%s' % (type(bytesorstring), bytesorstring))
+        return tmp
+
 # sigh, python octal constants are a mess
 MODE_644 = int('644', 8)
+MODE_744 = int('744', 8)
 MODE_755 = int('755', 8)
+MODE_777 = int('777', 8)
 
 def conf(f):
     # override in order to propagate the argument "mandatory"
@@ -254,6 +290,18 @@ def recursive_dirlist(dir, relbase, pattern=None):
     return ret
 
 
+def symlink(src, dst, force=True):
+    """Can create symlink by force"""
+    try:
+        os.symlink(src, dst)
+    except OSError as exc:
+        if exc.errno == errno.EEXIST and force:
+            os.remove(dst)
+            os.symlink(src, dst)
+        else:
+            raise
+
+
 def mkdir_p(dir):
     '''like mkdir -p'''
     if not dir:
@@ -327,7 +375,7 @@ def RUN_COMMAND(cmd,
         return os.WEXITSTATUS(status)
     if os.WIFSIGNALED(status):
         return - os.WTERMSIG(status)
-    Logs.error("Unknown exit reason %d for command: %s" (status, cmd))
+    Logs.error("Unknown exit reason %d for command: %s" % (status, cmd))
     return -1
 
 
@@ -439,14 +487,14 @@ Options.OptionsContext.RECURSE = RECURSE
 Build.BuildContext.RECURSE = RECURSE
 
 
-def CHECK_MAKEFLAGS(bld):
+def CHECK_MAKEFLAGS(options):
     '''check for MAKEFLAGS environment variable in case we are being
     called from a Makefile try to honor a few make command line flags'''
     if not 'WAF_MAKE' in os.environ:
         return
     makeflags = os.environ.get('MAKEFLAGS')
     if makeflags is None:
-        return
+        makeflags = ""
     jobs_set = False
     jobs = None
     # we need to use shlex.split to cope with the escaping of spaces
@@ -454,7 +502,7 @@ def CHECK_MAKEFLAGS(bld):
     for opt in shlex.split(makeflags):
         # options can come either as -x or as x
         if opt[0:2] == 'V=':
-            Options.options.verbose = Logs.verbose = int(opt[2:])
+            options.verbose = Logs.verbose = int(opt[2:])
             if Logs.verbose > 0:
                 Logs.zones = ['runner']
             if Logs.verbose > 2:
@@ -468,26 +516,53 @@ def CHECK_MAKEFLAGS(bld):
             # this is also how "make test TESTS=testpattern" works, and
             # "make VERBOSE=1" as well as things like "make SYMBOLCHECK=1"
             loc = opt.find('=')
-            setattr(Options.options, opt[0:loc], opt[loc+1:])
+            setattr(options, opt[0:loc], opt[loc+1:])
         elif opt[0] != '-':
             for v in opt:
                 if re.search(r'j[0-9]*$', v):
                     jobs_set = True
                     jobs = opt.strip('j')
                 elif v == 'k':
-                    Options.options.keep = True
+                    options.keep = True
         elif re.search(r'-j[0-9]*$', opt):
             jobs_set = True
             jobs = opt.strip('-j')
         elif opt == '-k':
-            Options.options.keep = True
+            options.keep = True
     if not jobs_set:
         # default to one job
-        Options.options.jobs = 1
+        options.jobs = 1
     elif jobs_set and jobs:
-        Options.options.jobs = int(jobs)
+        options.jobs = int(jobs)
 
-Build.BuildContext.CHECK_MAKEFLAGS = CHECK_MAKEFLAGS
+waflib_options_parse_cmd_args = Options.OptionsContext.parse_cmd_args
+def wafsamba_options_parse_cmd_args(self, _args=None, cwd=None, allow_unknown=False):
+    (options, commands, envvars) = \
+        waflib_options_parse_cmd_args(self,
+                                      _args=_args,
+                                      cwd=cwd,
+                                      allow_unknown=allow_unknown)
+    CHECK_MAKEFLAGS(options)
+    if options.jobs == 1:
+        #
+        # waflib.Runner.Parallel processes jobs inline if the possible number
+        # of jobs is just 1. But (at least in waf <= 2.0.12) it still calls
+        # create a waflib.Runner.Spawner() which creates a single
+        # waflib.Runner.Consumer() thread that tries to process jobs from the
+        # queue.
+        #
+        # This has strange effects, which are not noticed typically,
+        # but at least on AIX python has broken threading and fails
+        # in random ways.
+        #
+        # So we just add a dummy Spawner class.
+        class NoOpSpawner(object):
+            def __init__(self, master):
+                return
+        from waflib import Runner
+        Runner.Spawner = NoOpSpawner
+    return options, commands, envvars
+Options.OptionsContext.parse_cmd_args = wafsamba_options_parse_cmd_args
 
 option_groups = {}
 
@@ -528,7 +603,7 @@ def load_file(filename):
 
 def reconfigure(ctx):
     '''rerun configure if necessary'''
-    if not os.path.exists(".lock-wscript"):
+    if not os.path.exists(os.environ.get('WAFLOCK', '.lock-wscript')):
         raise Errors.WafError('configure has not been run')
     import samba_wildcard
     bld = samba_wildcard.fake_build_environment()

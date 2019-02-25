@@ -28,9 +28,9 @@ from samba.dcerpc import security
 from samba.ms_schema import read_ms_schema
 from samba.ndr import ndr_pack
 from samba.samdb import SamDB
+from samba.compat import get_string
 from samba import dsdb
 from ldb import SCOPE_SUBTREE, SCOPE_ONELEVEL
-import os
 
 
 def get_schema_descriptor(domain_sid, name_map={}):
@@ -112,7 +112,8 @@ class Schema(object):
 
         if files is not None:
             for file in files:
-                self.schema_data += open(file, 'rb').read()
+                data = get_string(open(file, 'rb').read())
+                self.schema_data += data
 
         self.schema_data = substitute_var(self.schema_data,
                                           {"SCHEMADN": schemadn})

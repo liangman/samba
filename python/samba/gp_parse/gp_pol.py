@@ -17,7 +17,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import codecs
 import base64
 
 from xml.etree.ElementTree import Element, SubElement
@@ -100,7 +99,7 @@ class GPPolParser(GPParser):
         # print self.pol_file.__ndr_print__()
 
     def write_xml(self, filename):
-        with file(filename, 'w') as f:
+        with open(filename, 'wb') as f:
             root = Element('PolFile')
             root.attrib['signature'] = self.pol_file.header.signature
             root.attrib['version'] = str(self.pol_file.header.version)
@@ -143,6 +142,6 @@ class GPPolParser(GPParser):
         # self.load_xml(fromstring(contents))
 
     def write_binary(self, filename):
-        with file(filename, 'wb') as f:
+        with open(filename, 'wb') as f:
             binary_data = ndr_pack(self.pol_file)
             f.write(binary_data)

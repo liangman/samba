@@ -26,7 +26,6 @@ from __future__ import print_function
 from __future__ import division
 import samba.getopt as options
 import ldb
-import string
 import os
 import sys
 import ctypes
@@ -45,7 +44,7 @@ import samba.ntacls
 from samba.join import join_RODC, join_DC, join_subdomain
 from samba.auth import system_session
 from samba.samdb import SamDB, get_default_backend_store
-from samba.ndr import ndr_unpack, ndr_pack, ndr_print
+from samba.ndr import ndr_pack, ndr_print
 from samba.dcerpc import drsuapi
 from samba.dcerpc import drsblobs
 from samba.dcerpc import lsa
@@ -65,9 +64,7 @@ from samba.netcmd.common import netcmd_get_domain_infos_via_cldap
 from samba.samba3 import Samba3
 from samba.samba3 import param as s3param
 from samba.upgrade import upgrade_from_samba3
-from samba.drs_utils import (
-                            sendDsReplicaSync, drsuapi_connect, drsException,
-                            sendRemoveDsServer)
+from samba.drs_utils import drsuapi_connect
 from samba import remove_dc, arcfour_encrypt, string_to_byte_array
 
 from samba.dsdb import (
@@ -103,6 +100,7 @@ from samba.netcmd.pso import cmd_domain_passwordsettings_pso
 from samba.netcmd.domain_backup import cmd_domain_backup
 
 from samba.compat import binary_type
+from samba.compat import get_string
 
 string_version_to_constant = {
     "2008_R2": DS_DOMAIN_FUNCTION_2008_R2,
@@ -153,9 +151,9 @@ def get_testparm_var(testparm, smbconf, varname):
                          stdout=subprocess.PIPE, stderr=errfile)
     (out, err) = p.communicate()
     errfile.close()
-    lines = out.split('\n')
+    lines = out.split(b'\n')
     if lines:
-        return lines[0].strip()
+        return get_string(lines[0]).strip()
     return ""
 
 
@@ -1804,7 +1802,7 @@ class DomainTrustCommand(Command):
             remote_info = remote_net.finddc(flags=remote_flags, domain=domain, address=remote_server)
         except NTSTATUSError as error:
             raise CommandError("Failed to find a writeable DC for domain '%s': %s" %
-                               (domain, error[1]))
+                               (domain, error.args[1]))
         except Exception:
             raise CommandError("Failed to find a writeable DC for domain '%s'" % domain)
         flag_map = {
@@ -1848,7 +1846,7 @@ class DomainTrustCommand(Command):
         objectAttr = lsa.ObjectAttribute()
         objectAttr.sec_qos = lsa.QosInfo()
 
-        policy = conn.OpenPolicy2(''.decode('utf-8'),
+        policy = conn.OpenPolicy2(b''.decode('utf-8'),
                                   objectAttr, policy_access)
 
         info = conn.QueryInfoPolicy2(policy, lsa.LSA_POLICY_INFO_DNS)
@@ -2335,7 +2333,7 @@ class cmd_domain_trust_create(DomainTrustCommand):
         def get_password(name):
             password = None
             while True:
-                if password is not None and password is not '':
+                if password is not None and password != '':
                     return password
                 password = getpass("New %s Password: " % name)
                 passwordverify = getpass("Retype %s Password: " % name)
@@ -2626,7 +2624,7 @@ class cmd_domain_trust_create(DomainTrustCommand):
                 self.outf.write("Deleting local TDO.\n")
                 local_lsa.DeleteObject(local_tdo_handle)
                 local_tdo_handle = None
-            if current_request['location'] is "remote":
+            if current_request['location'] == "remote":
                 raise self.RemoteRuntimeError(self, error, "%s" % (
                                               current_request['name']))
             raise self.LocalRuntimeError(self, error, "%s" % (
@@ -3465,7 +3463,7 @@ class cmd_domain_trust_namespaces(DomainTrustCommand):
 
             for upn in add_upn:
                 for i, v in enumerate(update_upn_vals):
-                    if v.lower() == upn.lower():
+                    if str(v).lower() == upn.lower():
                         raise CommandError("Entry already present for "
                                            "value[%s] specified for "
                                            "--add-upn-suffix" % upn)
@@ -3475,7 +3473,7 @@ class cmd_domain_trust_namespaces(DomainTrustCommand):
             for upn in delete_upn:
                 idx = None
                 for i, v in enumerate(update_upn_vals):
-                    if v.lower() != upn.lower():
+                    if str(v).lower() != upn.lower():
                         continue
                     idx = i
                     break
@@ -3487,7 +3485,7 @@ class cmd_domain_trust_namespaces(DomainTrustCommand):
 
             for spn in add_spn:
                 for i, v in enumerate(update_spn_vals):
-                    if v.lower() == spn.lower():
+                    if str(v).lower() == spn.lower():
                         raise CommandError("Entry already present for "
                                            "value[%s] specified for "
                                            "--add-spn-suffix" % spn)
@@ -3497,7 +3495,7 @@ class cmd_domain_trust_namespaces(DomainTrustCommand):
             for spn in delete_spn:
                 idx = None
                 for i, v in enumerate(update_spn_vals):
-                    if v.lower() != spn.lower():
+                    if str(v).lower() != spn.lower():
                         continue
                     idx = i
                     break
@@ -3880,7 +3878,6 @@ This command expunges tombstones from the database."""
     def run(self, *ncs, **kwargs):
         sambaopts = kwargs.get("sambaopts")
         credopts = kwargs.get("credopts")
-        versionpts = kwargs.get("versionopts")
         H = kwargs.get("H")
         current_time_string = kwargs.get("current_time")
         tombstone_lifetime = kwargs.get("tombstone_lifetime")
@@ -4092,7 +4089,7 @@ class cmd_domain_schema_upgrade(Command):
                     if len(res) != 1:
                         ldif_op.unknown_oid = value
                     else:
-                        display_name = res[0]['ldapDisplayName'][0]
+                        display_name = str(res[0]['ldapDisplayName'][0])
                         line = line.replace(value, ' ' + display_name)
 
             # Microsoft has marked objects as defunct that Samba doesn't know about
@@ -4136,7 +4133,6 @@ class cmd_domain_schema_upgrade(Command):
         updates_allowed_overriden = False
         sambaopts = kwargs.get("sambaopts")
         credopts = kwargs.get("credopts")
-        versionpts = kwargs.get("versionopts")
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
         H = kwargs.get("H")
@@ -4281,7 +4277,6 @@ class cmd_domain_functional_prep(Command):
         updates_allowed_overriden = False
         sambaopts = kwargs.get("sambaopts")
         credopts = kwargs.get("credopts")
-        versionpts = kwargs.get("versionopts")
         lp = sambaopts.get_loadparm()
         creds = credopts.get_credentials(lp)
         H = kwargs.get("H")

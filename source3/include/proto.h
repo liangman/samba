@@ -80,8 +80,6 @@ int map_errno_from_nt_status(NTSTATUS status);
 
 struct file_id vfs_file_id_from_sbuf(connection_struct *conn, const SMB_STRUCT_STAT *sbuf);
 
-#include "lib/gencache.h"
-
 /* The following definitions come from lib/interface.c  */
 
 bool ismyaddr(const struct sockaddr *ip);
@@ -204,6 +202,9 @@ int sys_set_vfs_quota(const char *path, const char *bdev, enum SMB_QUOTA_TYPE qt
 
 int sys_get_xfs_quota(const char *path, const char *bdev, enum SMB_QUOTA_TYPE qtype, unid_t id, SMB_DISK_QUOTA *dp);
 int sys_set_xfs_quota(const char *path, const char *bdev, enum SMB_QUOTA_TYPE qtype, unid_t id, SMB_DISK_QUOTA *dp);
+
+int sys_get_jfs2_quota(const char *path, const char *bdev, enum SMB_QUOTA_TYPE qtype, unid_t id, SMB_DISK_QUOTA *dp);
+int sys_set_jfs2_quota(const char *path, const char *bdev, enum SMB_QUOTA_TYPE qtype, unid_t id, SMB_DISK_QUOTA *dp);
 
 int sys_get_nfs_quota(const char *path, const char *bdev,
 		      enum SMB_QUOTA_TYPE qtype,
@@ -362,7 +363,7 @@ void set_namearray(name_compare_entry **ppname_array, const char *namelist);
 void free_namearray(name_compare_entry *name_array);
 bool fcntl_lock(int fd, int op, off_t offset, off_t count, int type);
 bool fcntl_getlock(int fd, int op, off_t *poffset, off_t *pcount, int *ptype, pid_t *ppid);
-int map_process_lock_to_ofd_lock(int op, bool *use_ofd_locks);
+int map_process_lock_to_ofd_lock(int op);
 bool is_myname(const char *s);
 void ra_lanman_string( const char *native_lanman );
 const char *get_remote_arch_str(void);
@@ -417,6 +418,7 @@ bool map_open_params_to_ntcreate(const char *smb_base_fname,
 				 uint32_t *pcreate_options,
 				 uint32_t *pprivate_flags);
 struct security_unix_token *copy_unix_token(TALLOC_CTX *ctx, const struct security_unix_token *tok);
+struct security_unix_token *root_unix_token(TALLOC_CTX *mem_ctx);
 bool dir_check_ftype(uint32_t mode, uint32_t dirtype);
 
 /* The following definitions come from lib/util_builtin.c  */
@@ -469,9 +471,6 @@ bool is_setuid_root(void) ;
 /* The following definitions come from lib/util_sid.c  */
 
 char *sid_to_fstring(fstring sidstr_out, const struct dom_sid *sid);
-char *sid_string_talloc(TALLOC_CTX *mem_ctx, const struct dom_sid *sid);
-char *sid_string_dbg(const struct dom_sid *sid);
-char *sid_string_tos(const struct dom_sid *sid);
 bool sid_linearize(uint8_t *outbuf, size_t len, const struct dom_sid *sid);
 bool non_mappable_sid(struct dom_sid *sid);
 char *sid_binstring_hex_talloc(TALLOC_CTX *mem_ctx, const struct dom_sid *sid);
@@ -579,7 +578,6 @@ size_t str_charnum(const char *s);
 bool trim_char(char *s,char cfront,char cback);
 bool strhasupper(const char *s);
 bool strhaslower(const char *s);
-char *StrnCpy(char *dest,const char *src,size_t n);
 bool in_list(const char *s, const char *list, bool casesensitive);
 void fstring_sub(char *s,const char *pattern,const char *insert);
 char *realloc_string_sub2(char *string,
@@ -1012,5 +1010,12 @@ void contend_level2_oplocks_begin(files_struct *fsp,
 				  enum level2_contention_type type);
 void contend_level2_oplocks_end(files_struct *fsp,
 				enum level2_contention_type type);
+
+/* The following definitions come from lib/per_thread_cwd.c */
+
+void per_thread_cwd_check(void);
+bool per_thread_cwd_supported(void);
+void per_thread_cwd_disable(void);
+void per_thread_cwd_activate(void);
 
 #endif /*  _PROTO_H_  */

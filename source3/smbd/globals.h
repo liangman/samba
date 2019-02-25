@@ -705,9 +705,6 @@ struct smbd_smb2_request {
 	struct smbXsrv_tcon *tcon;
 	uint32_t last_tid;
 
-	/* the tevent_context (wrapper) the request operates on */
-	struct tevent_context *ev_ctx;
-
 	int current_idx;
 	bool do_signing;
 	/* Was the request encrypted? */
@@ -879,9 +876,7 @@ struct smbd_server_connection {
 	const struct tsocket_address *local_address;
 	const struct tsocket_address *remote_address;
 	const char *remote_hostname;
-	struct tevent_context *raw_ev_ctx;
-	struct tevent_context *root_ev_ctx;
-	struct tevent_context *guest_ev_ctx;
+	struct tevent_context *ev_ctx;
 	struct messaging_context *msg_ctx;
 	struct notify_context *notify_ctx;
 	bool using_smb2;
@@ -943,8 +938,7 @@ struct smbd_server_connection {
 		} locks;
 	} smb2;
 
-	struct pthreadpool_tevent *sync_thread_pool;
-	struct pthreadpool_tevent *raw_thread_pool;
+	struct pthreadpool_tevent *pool;
 
 	struct smbXsrv_client *client;
 };

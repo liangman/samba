@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 
@@ -234,7 +234,8 @@ class UserTests(samba.tests.TestCase):
                 self.ldb.search(pattern % i,
                                 scope=SCOPE_BASE,
                                 attrs=['cn'])
-            except LdbError as (num, msg):
+            except LdbError as e:
+                (num, msg) = e
                 if num != ERR_NO_SUCH_OBJECT:
                     raise
 
@@ -421,7 +422,7 @@ class UserTests(samba.tests.TestCase):
         lines = ["dn: CN=g%d,%s" % (g, self.ou_groups),
                  "objectclass: group"]
 
-        for i in xrange(self.state.next_user_id):
+        for i in range(self.state.next_user_id):
             if random.random() <= link_chance:
                 lines.append("member: cn=u%d,%s" % (i, self.ou_users))
                 self.state.active_links.add((i, g))

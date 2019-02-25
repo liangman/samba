@@ -17,27 +17,28 @@
 #
 
 """Samba Python tests."""
-
+from __future__ import print_function
 import os
 import tempfile
+import warnings
 import ldb
 import samba
 from samba import param
 from samba import credentials
 from samba.credentials import Credentials
 from samba import gensec
-import socket
-import struct
 import subprocess
 import sys
-import tempfile
 import unittest
 import re
 import samba.auth
 import samba.dcerpc.base
-from samba.compat import PY3, text_type
+from samba.compat import text_type
 from samba.compat import string_types
 from random import randint
+from random import SystemRandom
+from contextlib import contextmanager
+import string
 try:
     from samba.samdb import SamDB
 except ImportError:
@@ -55,6 +56,9 @@ try:
 except ImportError:
     class SkipTest(Exception):
         """Test skipped."""
+
+BINDIR = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                      "../../../../bin"))
 
 HEXDUMP_FILTER = bytearray([x if ((len(repr(chr(x))) == 3) and (x < 127)) else ord('.') for x in range(256)])
 
@@ -291,9 +295,24 @@ class TestCaseInTempDir(TestCase):
         self.addCleanup(self._remove_tempdir)
 
     def _remove_tempdir(self):
+        # Note asserting here is treated as an error rather than a test failure
         self.assertEquals([], os.listdir(self.tempdir))
         os.rmdir(self.tempdir)
         self.tempdir = None
+
+    @contextmanager
+    def mktemp(self):
+        """Yield a temporary filename in the tempdir."""
+        try:
+            fd, fn = tempfile.mkstemp(dir=self.tempdir)
+            yield fn
+        finally:
+            try:
+                os.close(fd)
+                os.unlink(fn)
+            except (OSError, IOError) as e:
+                print("could not remove temporary file: %s" % e,
+                      file=sys.stderr)
 
 
 def env_loadparm():
@@ -348,14 +367,20 @@ class BlackboxProcessError(Exception):
 
     def __init__(self, returncode, cmd, stdout, stderr, msg=None):
         self.returncode = returncode
-        self.cmd = cmd
+        if isinstance(cmd, list):
+            self.cmd = ' '.join(cmd)
+            self.shell = False
+        else:
+            self.cmd = cmd
+            self.shell = True
         self.stdout = stdout
         self.stderr = stderr
         self.msg = msg
 
     def __str__(self):
-        s = ("Command '%s'; exit status %d; stdout: '%s'; stderr: '%s'" %
-             (self.cmd, self.returncode, self.stdout, self.stderr))
+        s = ("Command '%s'; shell %s; exit status %d; "
+             "stdout: '%s'; stderr: '%s'" %
+             (self.cmd, self.shell, self.returncode, self.stdout, self.stderr))
         if self.msg is not None:
             s = "%s; message: %s" % (s, self.msg)
 
@@ -366,11 +391,28 @@ class BlackboxTestCase(TestCaseInTempDir):
     """Base test case for blackbox tests."""
 
     def _make_cmdline(self, line):
-        bindir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../bin"))
-        parts = line.split(" ")
-        if os.path.exists(os.path.join(bindir, parts[0])):
-            parts[0] = os.path.join(bindir, parts[0])
-        line = " ".join(parts)
+        """Expand the called script into a fully resolved path in the bin
+        directory."""
+        if isinstance(line, list):
+            parts = line
+        else:
+            parts = line.split(" ", 1)
+        cmd = parts[0]
+        exe = os.path.join(BINDIR, cmd)
+
+        python_cmds = ["samba-tool",
+            "samba_dnsupdate",
+            "script/traffic_replay",
+            "script/traffic_learner"]
+
+        if os.path.exists(exe):
+            parts[0] = exe
+        if cmd in python_cmds and os.getenv("PYTHON", None):
+            parts.insert(0, os.environ["PYTHON"])
+
+        if not isinstance(line, list):
+            line = " ".join(parts)
+
         return line
 
     def check_run(self, line, msg=None):
@@ -378,13 +420,16 @@ class BlackboxTestCase(TestCaseInTempDir):
 
     def check_exit_code(self, line, expected, msg=None):
         line = self._make_cmdline(line)
+        use_shell = not isinstance(line, list)
         p = subprocess.Popen(line,
                              stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE,
-                             shell=True)
+                             shell=use_shell)
         stdoutdata, stderrdata = p.communicate()
         retcode = p.returncode
         if retcode != expected:
+            if msg is None:
+                msg = "expected return code %s; got %s" % (expected, retcode)
             raise BlackboxProcessError(retcode,
                                        line,
                                        stdoutdata,
@@ -392,13 +437,26 @@ class BlackboxTestCase(TestCaseInTempDir):
                                        msg)
 
     def check_output(self, line):
+        use_shell = not isinstance(line, list)
         line = self._make_cmdline(line)
-        p = subprocess.Popen(line, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, close_fds=True)
+        p = subprocess.Popen(line, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             shell=use_shell, close_fds=True)
         stdoutdata, stderrdata = p.communicate()
         retcode = p.returncode
         if retcode:
             raise BlackboxProcessError(retcode, line, stdoutdata, stderrdata)
         return stdoutdata
+
+    # Generate a random password that can be safely  passed on the command line
+    # i.e. it does not contain any shell meta characters.
+    def random_password(self, count=32):
+        password = SystemRandom().choice(string.ascii_uppercase)
+        password += SystemRandom().choice(string.digits)
+        password += SystemRandom().choice(string.ascii_lowercase)
+        password += ''.join(SystemRandom().choice(string.ascii_uppercase +
+                    string.ascii_lowercase +
+                    string.digits) for x in range(count - 3))
+        return password
 
 
 def connect_samdb(samdb_url, lp=None, session_info=None, credentials=None,

@@ -412,6 +412,7 @@ static int streams_xattr_open(vfs_handle_struct *handle,
 	char *xattr_name = NULL;
 	int pipe_fds[2];
 	int fakefd = -1;
+	bool set_empty_xattr = false;
 	int ret;
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct streams_xattr_config,
@@ -445,39 +446,37 @@ static int streams_xattr_open(vfs_handle_struct *handle,
 		goto fail;
 	}
 
-	/*
-	 * Return a valid fd, but ensure any attempt to use it returns an error
-	 * (EPIPE).
-	 */
-	ret = pipe(pipe_fds);
-	if (ret != 0) {
-		goto fail;
-	}
-
-	close(pipe_fds[1]);
-	pipe_fds[1] = -1;
-	fakefd = pipe_fds[0];
-
 	status = get_ea_value(talloc_tos(), handle->conn, NULL,
 			      smb_fname, xattr_name, &ea);
 
 	DEBUG(10, ("get_ea_value returned %s\n", nt_errstr(status)));
 
-	if (!NT_STATUS_IS_OK(status)
-	    && !NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
-		/*
-		 * The base file is not there. This is an error even if we got
-		 * O_CREAT, the higher levels should have created the base
-		 * file for us.
-		 */
-		DEBUG(10, ("streams_xattr_open: base file %s not around, "
-			   "returning ENOENT\n", smb_fname->base_name));
-		errno = ENOENT;
-		goto fail;
+	if (!NT_STATUS_IS_OK(status)) {
+		if (!NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
+			/*
+			 * The base file is not there. This is an error even if
+			 * we got O_CREAT, the higher levels should have created
+			 * the base file for us.
+			 */
+			DBG_DEBUG("streams_xattr_open: base file %s not around, "
+				  "returning ENOENT\n", smb_fname->base_name);
+			errno = ENOENT;
+			goto fail;
+		}
+
+		if (!(flags & O_CREAT)) {
+			errno = ENOATTR;
+			goto fail;
+		}
+
+		set_empty_xattr = true;
 	}
 
-	if ((!NT_STATUS_IS_OK(status) && (flags & O_CREAT)) ||
-	    (flags & O_TRUNC)) {
+	if (flags & O_TRUNC) {
+		set_empty_xattr = true;
+	}
+
+	if (set_empty_xattr) {
 		/*
 		 * The attribute does not exist or needs to be truncated
 		 */
@@ -499,6 +498,19 @@ static int streams_xattr_open(vfs_handle_struct *handle,
 			goto fail;
 		}
 	}
+
+	/*
+	 * Return a valid fd, but ensure any attempt to use it returns an error
+	 * (EPIPE).
+	 */
+	ret = pipe(pipe_fds);
+	if (ret != 0) {
+		goto fail;
+	}
+
+	close(pipe_fds[1]);
+	pipe_fds[1] = -1;
+	fakefd = pipe_fds[0];
 
         sio = VFS_ADD_FSP_EXTENSION(handle, fsp, struct stream_io, NULL);
         if (sio == NULL) {
@@ -540,6 +552,31 @@ static int streams_xattr_open(vfs_handle_struct *handle,
 	}
 
 	return -1;
+}
+
+static int streams_xattr_close(vfs_handle_struct *handle,
+			       files_struct *fsp)
+{
+	int ret;
+	int fd;
+
+	fd = fsp->fh->fd;
+
+	DBG_DEBUG("streams_xattr_close called [%s] fd [%d]\n",
+			smb_fname_str_dbg(fsp->fsp_name), fd);
+
+	if (!is_ntfs_stream_smb_fname(fsp->fsp_name)) {
+		return SMB_VFS_NEXT_CLOSE(handle, fsp);
+	}
+
+	if (is_ntfs_default_stream_smb_fname(fsp->fsp_name)) {
+		return SMB_VFS_NEXT_CLOSE(handle, fsp);
+	}
+
+	ret = close(fd);
+	fsp->fh->fd = -1;
+
+	return ret;
 }
 
 static int streams_xattr_unlink(vfs_handle_struct *handle,
@@ -1641,6 +1678,7 @@ static struct vfs_fn_pointers vfs_streams_xattr_fns = {
 	.fs_capabilities_fn = streams_xattr_fs_capabilities,
 	.connect_fn = streams_xattr_connect,
 	.open_fn = streams_xattr_open,
+	.close_fn = streams_xattr_close,
 	.stat_fn = streams_xattr_stat,
 	.fstat_fn = streams_xattr_fstat,
 	.lstat_fn = streams_xattr_lstat,

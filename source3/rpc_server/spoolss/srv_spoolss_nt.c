@@ -58,6 +58,7 @@
 #include "rpc_client/cli_winreg_spoolss.h"
 #include "../libcli/smb/smbXcli_base.h"
 #include "rpc_server/spoolss/srv_spoolss_handle.h"
+#include "lib/gencache.h"
 
 /* macros stolen from s4 spoolss server */
 #define SPOOLSS_BUFFER_UNION(fn,info,level) \
@@ -6239,6 +6240,7 @@ static WERROR update_printer_sec(struct policy_handle *handle,
 	}
 
 	if (DEBUGLEVEL >= 10) {
+		struct dom_sid_buf buf;
 		struct security_acl *the_acl;
 		int i;
 
@@ -6247,8 +6249,10 @@ static WERROR update_printer_sec(struct policy_handle *handle,
 			   printer, the_acl->num_aces));
 
 		for (i = 0; i < the_acl->num_aces; i++) {
-			DEBUG(10, ("%s 0x%08x\n", sid_string_dbg(
-					   &the_acl->aces[i].trustee),
+			DEBUG(10, ("%s 0x%08x\n",
+				   dom_sid_str_buf(
+					   &the_acl->aces[i].trustee,
+					   &buf),
 				  the_acl->aces[i].access_mask));
 		}
 
@@ -6259,8 +6263,10 @@ static WERROR update_printer_sec(struct policy_handle *handle,
 				   printer, the_acl->num_aces));
 
 			for (i = 0; i < the_acl->num_aces; i++) {
-				DEBUG(10, ("%s 0x%08x\n", sid_string_dbg(
-						   &the_acl->aces[i].trustee),
+				DEBUG(10, ("%s 0x%08x\n",
+					   dom_sid_str_buf(
+						   &the_acl->aces[i].trustee,
+						   &buf),
 					   the_acl->aces[i].access_mask));
 			}
 		} else {

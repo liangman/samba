@@ -94,9 +94,20 @@ sub bindir_path($$) {
 	my ($object, $path) = @_;
 
 	my $valpath = "$object->{bindir}/$path";
+	my $python_cmd = "";
+	my $result = $path;
+	if (defined $ENV{'PYTHON'}) {
+		$python_cmd = $ENV{'PYTHON'} . " ";
+	}
 
-	return $valpath if (-f $valpath or -d $valpath);
-	return $path;
+	if (-f $valpath or -d $valpath) {
+		$result = $valpath;
+	}
+	# make sure we prepend samba-tool with calling $PYTHON python version
+	if ($path eq "samba-tool") {
+		$result = $python_cmd . $result;
+	}
+	return $result;
 }
 
 sub nss_wrapper_winbind_so_path($) {
@@ -239,15 +250,21 @@ sub mk_krb5_conf($$)
  ticket_lifetime = 24h
  forwardable = yes
  allow_weak_crypto = yes
- # Set the grace clocskew to 5 seconds
- # This is especially required by samba3.raw.session krb5 and
- # reauth tests
- clockskew = 5
+
  # We are running on the same machine, do not correct
  # system clock differences
  kdc_timesync = 0
 
 ";
+
+	if (defined($ENV{MITKRB5})) {
+		print KRB5CONF "
+ # Set the grace clocskew to 5 seconds
+ # This is especially required by samba3.raw.session krb5 and
+ # reauth tests when not using Heimdal
+ clockskew = 5
+    ";
+	}
 
 	if (defined($ctx->{krb5_ccname})) {
 		print KRB5CONF "
@@ -412,6 +429,11 @@ sub get_interface($)
     $interfaces{"renamedc"} = 42;
     $interfaces{"labdc"} = 43;
     $interfaces{"offlinebackupdc"} = 44;
+    $interfaces{"customdc"} = 45;
+    $interfaces{"prockilldc"} = 46;
+    $interfaces{"proclimitdc"} = 47;
+
+    $interfaces{"rootdnsforwarder"} = 64;
 
     # update lib/socket_wrapper/socket_wrapper.c
     #  #define MAX_WRAPPED_INTERFACES 64

@@ -36,7 +36,6 @@ from samba import werror, WERRORError
 from samba.tests.dns_base import DNSTest
 import samba.getopt as options
 import optparse
-import samba.dcerpc.dnsp
 
 
 parser = optparse.OptionParser("dns.py <server name> <server ip> [options]")
@@ -847,6 +846,129 @@ class TestComplexQueries(DNSTest):
         self.assertEquals(response.answers[1].name, name2)
         self.assertEquals(response.answers[1].rdata, name0)
 
+    def test_cname_loop(self):
+        cname1 = "cnamelooptestrec." + self.get_dns_domain()
+        cname2 = "cnamelooptestrec2." + self.get_dns_domain()
+        cname3 = "cnamelooptestrec3." + self.get_dns_domain()
+        self.make_dns_update(cname1, cname2, dnsp.DNS_TYPE_CNAME)
+        self.make_dns_update(cname2, cname3, dnsp.DNS_TYPE_CNAME)
+        self.make_dns_update(cname3, cname1, dnsp.DNS_TYPE_CNAME)
+
+        p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
+        questions = []
+
+        q = self.make_name_question(cname1,
+                                    dns.DNS_QTYPE_A,
+                                    dns.DNS_QCLASS_IN)
+        questions.append(q)
+        self.finish_name_packet(p, questions)
+
+        (response, response_packet) =\
+            self.dns_transaction_udp(p, host=self.server_ip)
+
+        max_recursion_depth = 20
+        self.assertEquals(len(response.answers), max_recursion_depth)
+
+    # Make sure cname limit doesn't count other records.  This is a generic
+    # test called in tests below
+    def max_rec_test(self, rtype, rec_gen):
+        name = "limittestrec{0}.{1}".format(rtype, self.get_dns_domain())
+        limit = 20
+        num_recs_to_enter = limit + 5
+
+        for i in range(1, num_recs_to_enter+1):
+            ip = rec_gen(i)
+            self.make_dns_update(name, ip, rtype)
+
+        p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
+        questions = []
+
+        q = self.make_name_question(name,
+                                    rtype,
+                                    dns.DNS_QCLASS_IN)
+        questions.append(q)
+        self.finish_name_packet(p, questions)
+
+        (response, response_packet) =\
+            self.dns_transaction_udp(p, host=self.server_ip)
+
+        self.assertEqual(len(response.answers), num_recs_to_enter)
+
+    def test_record_limit_A(self):
+        def ip4_gen(i):
+            return "127.0.0." + str(i)
+        self.max_rec_test(rtype=dns.DNS_QTYPE_A, rec_gen=ip4_gen)
+
+    def test_record_limit_AAAA(self):
+        def ip6_gen(i):
+            return "AAAA:0:0:0:0:0:0:" + str(i)
+        self.max_rec_test(rtype=dns.DNS_QTYPE_AAAA, rec_gen=ip6_gen)
+
+    def test_record_limit_SRV(self):
+        def srv_gen(i):
+            rec = dns.srv_record()
+            rec.priority = 1
+            rec.weight = 1
+            rec.port = 92
+            rec.target = "srvtestrec" + str(i)
+            return rec
+        self.max_rec_test(rtype=dns.DNS_QTYPE_SRV, rec_gen=srv_gen)
+
+    # Same as test_record_limit_A but with a preceding CNAME follow
+    def test_cname_limit(self):
+        cname1 = "cnamelimittestrec." + self.get_dns_domain()
+        cname2 = "cnamelimittestrec2." + self.get_dns_domain()
+        cname3 = "cnamelimittestrec3." + self.get_dns_domain()
+        ip_prefix = '127.0.0.'
+        limit = 20
+        num_recs_to_enter = limit + 5
+
+        self.make_dns_update(cname1, cname2, dnsp.DNS_TYPE_CNAME)
+        self.make_dns_update(cname2, cname3, dnsp.DNS_TYPE_CNAME)
+        num_arecs_to_enter = num_recs_to_enter - 2
+        for i in range(1, num_arecs_to_enter+1):
+            ip = ip_prefix + str(i)
+            self.make_dns_update(cname3, ip, dns.DNS_QTYPE_A)
+
+        p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
+        questions = []
+
+        q = self.make_name_question(cname1,
+                                    dns.DNS_QTYPE_A,
+                                    dns.DNS_QCLASS_IN)
+        questions.append(q)
+        self.finish_name_packet(p, questions)
+
+        (response, response_packet) =\
+            self.dns_transaction_udp(p, host=self.server_ip)
+
+        self.assertEqual(len(response.answers), num_recs_to_enter)
+
+    # ANY query on cname record shouldn't follow the link
+    def test_cname_any_query(self):
+        cname1 = "cnameanytestrec." + self.get_dns_domain()
+        cname2 = "cnameanytestrec2." + self.get_dns_domain()
+        cname3 = "cnameanytestrec3." + self.get_dns_domain()
+
+        self.make_dns_update(cname1, cname2, dnsp.DNS_TYPE_CNAME)
+        self.make_dns_update(cname2, cname3, dnsp.DNS_TYPE_CNAME)
+
+        p = self.make_name_packet(dns.DNS_OPCODE_QUERY)
+        questions = []
+
+        q = self.make_name_question(cname1,
+                                    dns.DNS_QTYPE_ALL,
+                                    dns.DNS_QCLASS_IN)
+        questions.append(q)
+        self.finish_name_packet(p, questions)
+
+        (response, response_packet) =\
+            self.dns_transaction_udp(p, host=self.server_ip)
+
+        self.assertEqual(len(response.answers), 1)
+        self.assertEqual(response.answers[0].name, cname1)
+        self.assertEqual(response.answers[0].rdata, cname2)
+
 
 class TestInvalidQueries(DNSTest):
     def setUp(self):
@@ -866,7 +988,7 @@ class TestInvalidQueries(DNSTest):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, 0)
             s.connect((self.server_ip, 53))
-            s.send("", 0)
+            s.send(b"", 0)
         finally:
             if s is not None:
                 s.close()
@@ -958,7 +1080,7 @@ class TestZones(DNSTest):
             if num != werror.WERR_DNS_ERROR_ZONE_DOES_NOT_EXIST:
                 raise
 
-    def create_zone(self, zone, aging_enabled=False):
+    def make_zone_obj(self, zone, aging_enabled=False):
         zone_create = dnsserver.DNS_RPC_ZONE_CREATE_INFO_LONGHORN()
         zone_create.pszZoneName = zone
         zone_create.dwZoneType = dnsp.DNS_ZONE_TYPE_PRIMARY
@@ -967,6 +1089,10 @@ class TestZones(DNSTest):
         zone_create.fDsIntegrated = 1
         zone_create.fLoadExisting = 1
         zone_create.fAllowUpdate = dnsp.DNS_ZONE_UPDATE_UNSECURE
+        return zone_create
+
+    def create_zone(self, zone, aging_enabled=False):
+        zone_create = self.make_zone_obj(zone, aging_enabled)
         try:
             client_version = dnsserver.DNS_CLIENT_VERSION_LONGHORN
             self.rpc_conn.DnssrvOperation2(client_version,
@@ -978,7 +1104,7 @@ class TestZones(DNSTest):
                                            dnsserver.DNSSRV_TYPEID_ZONE_CREATE,
                                            zone_create)
         except WERRORError as e:
-            self.fail(str(e))
+            self.fail(e)
 
     def set_params(self, **kwargs):
         zone = kwargs.pop('zone', None)
@@ -1131,13 +1257,13 @@ class TestZones(DNSTest):
 
         def mod_ts(rec):
             self.assertTrue(rec.dwTimeStamp > 0)
-            rec.dwTimeStamp -= interval / 2
+            rec.dwTimeStamp -= interval // 2
         self.ldap_modify_dnsrecs(name, mod_ts)
         update_during_norefresh = self.dns_update_record(name, txt)
 
         def mod_ts(rec):
             self.assertTrue(rec.dwTimeStamp > 0)
-            rec.dwTimeStamp -= interval + interval / 2
+            rec.dwTimeStamp -= interval + interval // 2
         self.ldap_modify_dnsrecs(name, mod_ts)
         update_during_refresh = self.dns_update_record(name, txt)
         self.assertEqual(update_during_norefresh.dwTimeStamp,
@@ -1424,6 +1550,59 @@ class TestZones(DNSTest):
             else:
                 self.assertEqual(len(recs), 1)
 
+    def test_fully_qualified_zone(self):
+
+        def create_zone_expect_exists(zone):
+            try:
+                zone_create = self.make_zone_obj(zone)
+                client_version = dnsserver.DNS_CLIENT_VERSION_LONGHORN
+                zc_type = dnsserver.DNSSRV_TYPEID_ZONE_CREATE
+                self.rpc_conn.DnssrvOperation2(client_version,
+                                               0,
+                                               self.server_ip,
+                                               None,
+                                               0,
+                                               'ZoneCreate',
+                                               zc_type,
+                                               zone_create)
+            except WERRORError as e:
+                enum, _ = e.args
+                if enum != werror.WERR_DNS_ERROR_ZONE_ALREADY_EXISTS:
+                    self.fail(e)
+                return
+            self.fail("Zone {} should already exist".format(zone))
+
+        # Create unqualified, then check creating qualified fails.
+        self.create_zone(self.zone)
+        create_zone_expect_exists(self.zone + '.')
+
+        # Same again, but the other way around.
+        self.create_zone(self.zone + '2.')
+        create_zone_expect_exists(self.zone + '2')
+
+        client_version = dnsserver.DNS_CLIENT_VERSION_LONGHORN
+        request_filter = dnsserver.DNS_ZONE_REQUEST_PRIMARY
+        tid = dnsserver.DNSSRV_TYPEID_DWORD
+        typeid, res = self.rpc_conn.DnssrvComplexOperation2(client_version,
+                                                            0,
+                                                            self.server_ip,
+                                                            None,
+                                                            'EnumZones',
+                                                            tid,
+                                                            request_filter)
+
+        self.delete_zone(self.zone)
+        self.delete_zone(self.zone + '2')
+
+        # Two zones should've been created, neither of them fully qualified.
+        zones_we_just_made = []
+        zones = [str(z.pszZoneName) for z in res.ZoneArray]
+        for zone in zones:
+            if zone.startswith(self.zone):
+                zones_we_just_made.append(zone)
+        self.assertEqual(len(zones_we_just_made), 2)
+        self.assertEqual(set(zones_we_just_made), {self.zone + '2', self.zone})
+
     def delete_zone(self, zone):
         self.rpc_conn.DnssrvOperation2(dnsserver.DNS_CLIENT_VERSION_LONGHORN,
                                        0,
@@ -1481,6 +1660,50 @@ class TestRPCRoundtrip(DNSTest):
 
     def tearDown(self):
         super(TestRPCRoundtrip, self).tearDown()
+
+    def rpc_update(self, fqn=None, data=None, wType=None, delete=False):
+        fqn = fqn or ("rpctestrec." + self.get_dns_domain())
+
+        rec = data_to_dns_record(wType, data)
+        add_rec_buf = dnsserver.DNS_RPC_RECORD_BUF()
+        add_rec_buf.rec = rec
+
+        add_arg = add_rec_buf
+        del_arg = None
+        if delete:
+            add_arg = None
+            del_arg = add_rec_buf
+
+        self.rpc_conn.DnssrvUpdateRecord2(
+            dnsserver.DNS_CLIENT_VERSION_LONGHORN,
+            0,
+            self.server_ip,
+            self.get_dns_domain(),
+            fqn,
+            add_arg,
+            del_arg)
+
+    def test_rpc_self_referencing_cname(self):
+        cname = "cnametest2_unqual_rec_loop"
+        cname_fqn = "%s.%s" % (cname, self.get_dns_domain())
+
+        try:
+            self.rpc_update(fqn=cname, data=cname_fqn,
+                            wType=dnsp.DNS_TYPE_CNAME, delete=True)
+        except WERRORError as e:
+            if e.args[0] != werror.WERR_DNS_ERROR_RECORD_DOES_NOT_EXIST:
+                self.fail("RPC DNS gaven wrong error on pre-test cleanup "
+                          "for self referencing CNAME: %s" % e.args[0])
+
+        try:
+            self.rpc_update(fqn=cname, wType=dnsp.DNS_TYPE_CNAME, data=cname_fqn)
+        except WERRORError as e:
+            if e.args[0] != werror.WERR_DNS_ERROR_CNAME_LOOP:
+                self.fail("RPC DNS gaven wrong error on insertion of "
+                          "self referencing CNAME: %s" % e.args[0])
+            return
+
+        self.fail("RPC DNS allowed insertion of self referencing CNAME")
 
     def test_update_add_txt_rpc_to_dns(self):
         prefix, txt = 'rpctextrec', ['"This is a test"']

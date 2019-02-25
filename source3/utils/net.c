@@ -49,6 +49,8 @@
 #include "passdb.h"
 #include "messages.h"
 #include "cmdline_contexts.h"
+#include "lib/gencache.h"
+#include "auth/credentials/credentials.h"
 
 #ifdef WITH_FAKE_KASERVER
 #include "utils/net_afs.h"
@@ -154,16 +156,22 @@ static int net_primarytrust(struct net_context *c, int argc, const char **argv)
 {
 	struct functable func[] = {
 		{
-			"dumpinfo",
-			net_primarytrust_dumpinfo,
-			NET_TRANSPORT_LOCAL,
-			N_("Dump the details of the workstation trust"),
-			N_("  net [options] primarytrust dumpinfo'\n"
-			   "    Dump the details of the workstation trust "
-			   "in secrets.tdb.\n"
-			   "    Requires the -f flag to include the password values.")
+			.funcname         = "dumpinfo",
+			.fn               = net_primarytrust_dumpinfo,
+			.valid_transports = NET_TRANSPORT_LOCAL,
+			.description      = N_("Dump the details of the "
+					       "workstation trust"),
+			.usage            = N_("  net [options] primarytrust "
+					       "dumpinfo'\n"
+					       "    Dump the details of the "
+					       "workstation trust in "
+					       "secrets.tdb.\n"
+					       "    Requires the -f flag to "
+					       "include the password values."),
 		},
-		{NULL, NULL, 0, NULL, NULL}
+		{
+			.funcname = NULL,
+		},
 	};
 
 	return net_run_function(c, argc, argv, "net primarytrust", func);
@@ -357,7 +365,7 @@ static int net_getlocalsid(struct net_context *c, int argc, const char **argv)
 {
         struct dom_sid sid;
 	const char *name;
-	fstring sid_str;
+	struct dom_sid_buf sid_str;
 
 	if (argc >= 1) {
 		name = argv[0];
@@ -388,8 +396,9 @@ static int net_getlocalsid(struct net_context *c, int argc, const char **argv)
 		DEBUG(0, ("Can't fetch domain SID for name: %s\n", name));
 		return 1;
 	}
-	sid_to_fstring(sid_str, &sid);
-	d_printf(_("SID for domain %s is: %s\n"), name, sid_str);
+	d_printf(_("SID for domain %s is: %s\n"),
+		 name,
+		 dom_sid_str_buf(&sid, &sid_str));
 	return 0;
 }
 
@@ -438,7 +447,7 @@ static int net_setdomainsid(struct net_context *c, int argc, const char **argv)
 static int net_getdomainsid(struct net_context *c, int argc, const char **argv)
 {
 	struct dom_sid domain_sid;
-	fstring sid_str;
+	struct dom_sid_buf sid_str;
 
 	if (argc > 0) {
 		d_printf(_("Usage:"));
@@ -469,17 +478,18 @@ static int net_getdomainsid(struct net_context *c, int argc, const char **argv)
 			d_fprintf(stderr, _("Could not fetch local SID\n"));
 			return 1;
 		}
-		sid_to_fstring(sid_str, &domain_sid);
 		d_printf(_("SID for local machine %s is: %s\n"),
-			 lp_netbios_name(), sid_str);
+			 lp_netbios_name(),
+			 dom_sid_str_buf(&domain_sid, &sid_str));
 	}
 	if (!secrets_fetch_domain_sid(c->opt_workgroup, &domain_sid)) {
 		d_fprintf(stderr, _("Could not fetch domain SID\n"));
 		return 1;
 	}
 
-	sid_to_fstring(sid_str, &domain_sid);
-	d_printf(_("SID for domain %s is: %s\n"), c->opt_workgroup, sid_str);
+	d_printf(_("SID for domain %s is: %s\n"),
+		 c->opt_workgroup,
+		 dom_sid_str_buf(&domain_sid, &sid_str));
 
 	return 0;
 }
@@ -903,6 +913,26 @@ static struct functable net_func[] = {
 };
 
 
+static void get_credentials_file(struct net_context *c,
+				 const char *file)
+{
+	struct cli_credentials *cred = cli_credentials_init(c);
+
+	if (cred == NULL) {
+		d_printf("ERROR: Unable to allocate memory!\n");
+		exit(-1);
+	}
+
+	if (!cli_credentials_parse_file(cred, file, CRED_GUESS_FILE)) {
+		exit(-1);
+	}
+
+	c->opt_user_name = cli_credentials_get_username(cred);
+	c->opt_user_specified = (c->opt_user_name != NULL);
+	c->opt_password = cli_credentials_get_password(cred);
+	c->opt_target_workgroup = cli_credentials_get_domain(cred);
+}
+
 /****************************************************************************
   main program
 ****************************************************************************/
@@ -919,63 +949,316 @@ static struct functable net_func[] = {
 	struct net_context *c = talloc_zero(frame, struct net_context);
 
 	struct poptOption long_options[] = {
-		{"help",	'h', POPT_ARG_NONE,   0, 'h'},
-		{"workgroup",	'w', POPT_ARG_STRING, &c->opt_target_workgroup},
-		{"user",	'U', POPT_ARG_STRING, &c->opt_user_name, 'U'},
-		{"ipaddress",	'I', POPT_ARG_STRING, 0,'I'},
-		{"port",	'p', POPT_ARG_INT,    &c->opt_port},
-		{"myname",	'n', POPT_ARG_STRING, &c->opt_requester_name},
-		{"server",	'S', POPT_ARG_STRING, &c->opt_host},
-		{"encrypt",	'e', POPT_ARG_NONE,   NULL, 'e', N_("Encrypt SMB transport") },
-		{"container",	'c', POPT_ARG_STRING, &c->opt_container},
-		{"comment",	'C', POPT_ARG_STRING, &c->opt_comment},
-		{"maxusers",	'M', POPT_ARG_INT,    &c->opt_maxusers},
-		{"flags",	'F', POPT_ARG_INT,    &c->opt_flags},
-		{"long",	'l', POPT_ARG_NONE,   &c->opt_long_list_entries},
-		{"reboot",	'r', POPT_ARG_NONE,   &c->opt_reboot},
-		{"force",	'f', POPT_ARG_NONE,   &c->opt_force},
-		{"stdin",	'i', POPT_ARG_NONE,   &c->opt_stdin},
-		{"timeout",	't', POPT_ARG_INT,    &c->opt_timeout},
-		{"request-timeout",0,POPT_ARG_INT,    &c->opt_request_timeout},
-		{"machine-pass",'P', POPT_ARG_NONE,   &c->opt_machine_pass},
-		{"kerberos",    'k', POPT_ARG_NONE,   &c->opt_kerberos},
-		{"myworkgroup", 'W', POPT_ARG_STRING, &c->opt_workgroup},
-		{"use-ccache",    0, POPT_ARG_NONE,   &c->opt_ccache},
-		{"verbose",	'v', POPT_ARG_NONE,   &c->opt_verbose},
-		{"test",	'T', POPT_ARG_NONE,   &c->opt_testmode},
+		{
+			.longName   = "help",
+			.shortName  = 'h',
+			.argInfo    = POPT_ARG_NONE,
+			.val        = 'h',
+		},
+		{
+			.longName   = "workgroup",
+			.shortName  = 'w',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_target_workgroup,
+		},
+		{
+			.longName   = "user",
+			.shortName  = 'U',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_user_name,
+			.val        = 'U',
+		},
+		{
+			.longName   = "authentication-file",
+			.shortName  = 'A',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_user_name,
+			.val        = 'A',
+			.descrip    = "Get the credentials from a file",
+			.argDescrip = "FILE",
+		},
+		{
+			.longName   = "ipaddress",
+			.shortName  = 'I',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = 0,
+			.val        = 'I',
+		},
+		{
+			.longName   = "port",
+			.shortName  = 'p',
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_port,
+		},
+		{
+			.longName   = "myname",
+			.shortName  = 'n',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_requester_name,
+		},
+		{
+			.longName   = "server",
+			.shortName  = 'S',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_host,
+		},
+		{
+			.longName   = "encrypt",
+			.shortName  = 'e',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'e',
+			.descrip    = N_("Encrypt SMB transport"),
+		},
+		{
+			.longName   = "container",
+			.shortName  = 'c',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_container,
+		},
+		{
+			.longName   = "comment",
+			.shortName  = 'C',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_comment,
+		},
+		{
+			.longName   = "maxusers",
+			.shortName  = 'M',
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_maxusers,
+		},
+		{
+			.longName   = "flags",
+			.shortName  = 'F',
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_flags,
+		},
+		{
+			.longName   = "long",
+			.shortName  = 'l',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_long_list_entries,
+		},
+		{
+			.longName   = "reboot",
+			.shortName  = 'r',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_reboot,
+		},
+		{
+			.longName   = "force",
+			.shortName  = 'f',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_force,
+		},
+		{
+			.longName   = "stdin",
+			.shortName  = 'i',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_stdin,
+		},
+		{
+			.longName   = "timeout",
+			.shortName  = 't',
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_timeout,
+		},
+		{
+			.longName   = "request-timeout",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_request_timeout,
+		},
+		{
+			.longName   = "machine-pass",
+			.shortName  = 'P',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_machine_pass,
+		},
+		{
+			.longName   = "kerberos",
+			.shortName  = 'k',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_kerberos,
+		},
+		{
+			.longName   = "myworkgroup",
+			.shortName  = 'W',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_workgroup,
+		},
+		{
+			.longName   = "use-ccache",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_ccache,
+		},
+		{
+			.longName   = "verbose",
+			.shortName  = 'v',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_verbose,
+		},
+		{
+			.longName   = "test",
+			.shortName  = 'T',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_testmode,
+		},
 		/* Options for 'net groupmap set' */
-		{"local",       'L', POPT_ARG_NONE,   &c->opt_localgroup},
-		{"domain",      'D', POPT_ARG_NONE,   &c->opt_domaingroup},
-		{"ntname",      'N', POPT_ARG_STRING, &c->opt_newntname},
-		{"rid",         'R', POPT_ARG_INT,    &c->opt_rid},
+		{
+			.longName   = "local",
+			.shortName  = 'L',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_localgroup,
+		},
+		{
+			.longName   = "domain",
+			.shortName  = 'D',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_domaingroup,
+		},
+		{
+			.longName   = "ntname",
+			.shortName  = 'N',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_newntname,
+		},
+		{
+			.longName   = "rid",
+			.shortName  = 'R',
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_rid,
+		},
 		/* Options for 'net rpc share migrate' */
-		{"acls",	0, POPT_ARG_NONE,     &c->opt_acls},
-		{"attrs",	0, POPT_ARG_NONE,     &c->opt_attrs},
-		{"timestamps",	0, POPT_ARG_NONE,     &c->opt_timestamps},
-		{"exclude",	'X', POPT_ARG_STRING, &c->opt_exclude},
-		{"destination",	0, POPT_ARG_STRING,   &c->opt_destination},
-		{"tallocreport", 0, POPT_ARG_NONE,    &c->do_talloc_report},
+		{
+			.longName   = "acls",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_acls,
+		},
+		{
+			.longName   = "attrs",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_attrs,
+		},
+		{
+			.longName   = "timestamps",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_timestamps,
+		},
+		{
+			.longName   = "exclude",
+			.shortName  = 'X',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_exclude,
+		},
+		{
+			.longName   = "destination",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_destination,
+		},
+		{
+			.longName   = "tallocreport",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->do_talloc_report,
+		},
 		/* Options for 'net rpc vampire (keytab)' */
-		{"force-full-repl", 0, POPT_ARG_NONE, &c->opt_force_full_repl},
-		{"single-obj-repl", 0, POPT_ARG_NONE, &c->opt_single_obj_repl},
-		{"clean-old-entries", 0, POPT_ARG_NONE, &c->opt_clean_old_entries},
+		{
+			.longName   = "force-full-repl",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_force_full_repl,
+		},
+		{
+			.longName   = "single-obj-repl",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_single_obj_repl,
+		},
+		{
+			.longName   = "clean-old-entries",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_clean_old_entries,
+		},
 		/* Options for 'net idmap'*/
-		{"db", 0, POPT_ARG_STRING, &c->opt_db},
-		{"lock", 0, POPT_ARG_NONE,   &c->opt_lock},
-		{"auto", 'a', POPT_ARG_NONE,   &c->opt_auto},
-		{"repair", 0, POPT_ARG_NONE,   &c->opt_repair},
+		{
+			.longName   = "db",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_db,
+		},
+		{
+			.longName   = "lock",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        =   &c->opt_lock,
+		},
+		{
+			.longName   = "auto",
+			.shortName  = 'a',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_auto,
+		},
+		{
+			.longName   = "repair",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        =   &c->opt_repair,
+		},
 		/* Options for 'net registry check'*/
-		{"reg-version", 0, POPT_ARG_INT, &c->opt_reg_version},
-		{"output", 'o', POPT_ARG_STRING, &c->opt_output},
-		{"wipe", 0, POPT_ARG_NONE, &c->opt_wipe},
+		{
+			.longName   = "reg-version",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &c->opt_reg_version,
+		},
+		{
+			.longName   = "output",
+			.shortName  = 'o',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_output,
+		},
+		{
+			.longName   = "wipe",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_wipe,
+		},
 		/* Options for 'net registry import' */
-		{"precheck", 0, POPT_ARG_STRING, &c->opt_precheck},
+		{
+			.longName   = "precheck",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &c->opt_precheck,
+		},
 		/* Options for 'net ads join or leave' */
-		{"no-dns-updates", 0, POPT_ARG_NONE, &c->opt_no_dns_updates},
-		{"keep-account", 0, POPT_ARG_NONE, &c->opt_keep_account},
-		{"json", 0, POPT_ARG_NONE, &c->opt_json},
+		{
+			.longName   = "no-dns-updates",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_no_dns_updates,
+		},
+		{
+			.longName   = "keep-account",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_keep_account,
+		},
+		{
+			.longName   = "json",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = &c->opt_json,
+		},
 		POPT_COMMON_SAMBA
-		{ 0, 0, 0, 0}
+		POPT_TABLEEND
 	};
 
 	zero_sockaddr(&c->opt_dest_ip);
@@ -1023,6 +1306,9 @@ static struct functable net_func[] = {
 				*p = 0;
 				c->opt_password = p+1;
 			}
+			break;
+		case 'A':
+			get_credentials_file(c, c->opt_user_name);
 			break;
 		default:
 			d_fprintf(stderr, _("\nInvalid option %s: %s\n"),
@@ -1105,8 +1391,6 @@ static struct functable net_func[] = {
 	rc = net_run_function(c, argc_new-1, argv_new+1, "net", net_func);
 
 	DEBUG(2,("return code = %d\n", rc));
-
-	gencache_stabilize();
 
 	libnetapi_free(c->netapi_ctx);
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Simple tests for the ldb python bindings.
 # Copyright (C) 2007 Jelmer Vernooij <jelmer@samba.org>
 
@@ -141,6 +141,21 @@ class SimpleLdb(LdbBaseTest):
     def test_utf8_ldb_Dn(self):
         l = ldb.Ldb(self.url(), flags=self.flags())
         dn = ldb.Dn(l, (b'a=' + b'\xc4\x85\xc4\x87\xc4\x99\xc5\x82\xc5\x84\xc3\xb3\xc5\x9b\xc5\xba\xc5\xbc').decode('utf8'))
+
+    def test_utf8_encoded_ldb_Dn(self):
+        l = ldb.Ldb(self.url(), flags=self.flags())
+        dn_encoded_utf8 = b'a=' + b'\xc4\x85\xc4\x87\xc4\x99\xc5\x82\xc5\x84\xc3\xb3\xc5\x9b\xc5\xba\xc5\xbc'
+        try:
+            dn = ldb.Dn(l, dn_encoded_utf8)
+        except UnicodeDecodeError as e:
+                raise
+        except TypeError as te:
+            if PY3:
+               p3errors = ["argument 2 must be str, not bytes",
+                           "Can't convert 'bytes' object to str implicitly"]
+               self.assertIn(str(te), p3errors)
+            else:
+               raise
 
     def test_search_attrs(self):
         l = ldb.Ldb(self.url(), flags=self.flags())
@@ -2062,7 +2077,7 @@ class DnTests(TestCase):
         x = ldb.Dn(self.ldb, "dc=foo13,bla=blie")
         self.assertEqual(x.__repr__(), "Dn('dc=foo13,bla=blie')")
 
-    def test_get_casefold(self):
+    def test_get_casefold_2(self):
         x = ldb.Dn(self.ldb, "dc=foo14,bar=bloe")
         self.assertEqual(x.get_casefold(), "DC=FOO14,BAR=bloe")
 
@@ -2302,12 +2317,14 @@ class LdbMsgTests(TestCase):
                 "Message({'dc': MessageElement([b'foo']), 'dn': Dn('dc=foo29')}).text",
             ])
         else:
-            self.assertEqual(
-                repr(self.msg),
-                "Message({'dn': Dn('dc=foo29'), 'dc': MessageElement(['foo'])})")
-            self.assertEqual(
-                repr(self.msg.text),
-                "Message({'dn': Dn('dc=foo29'), 'dc': MessageElement(['foo'])}).text")
+            self.assertIn(repr(self.msg), [
+                "Message({'dn': Dn('dc=foo29'), 'dc': MessageElement(['foo'])})",
+                "Message({'dc': MessageElement(['foo']), 'dn': Dn('dc=foo29')})",
+            ])
+            self.assertIn(repr(self.msg.text), [
+                "Message({'dn': Dn('dc=foo29'), 'dc': MessageElement(['foo'])}).text",
+                "Message({'dc': MessageElement(['foo']), 'dn': Dn('dc=foo29')}).text",
+            ])
 
     def test_len(self):
         self.assertEqual(0, len(self.msg))
@@ -2792,7 +2809,7 @@ class LdbResultTests(LdbBaseTest):
             # and commit
             try:
                 child_ldb.transaction_commit()
-            except LdbError as err:
+            except ldb.LdbError as err:
                 # We print this here to see what went wrong in the child
                 print(err)
                 os._exit(1)
@@ -2863,7 +2880,7 @@ class LdbResultTests(LdbBaseTest):
             # and commit
             try:
                 child_ldb.transaction_commit()
-            except LdbError as err:
+            except ldb.LdbError as err:
                 # We print this here to see what went wrong in the child
                 print(err)
                 os._exit(1)

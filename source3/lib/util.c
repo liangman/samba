@@ -36,6 +36,7 @@
 #include "lib/util/sys_rw_data.h"
 #include "lib/util/util_process.h"
 #include "lib/dbwrap/dbwrap_ctdb.h"
+#include "lib/gencache.h"
 
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
@@ -451,6 +452,13 @@ NTSTATUS reinit_after_fork(struct messaging_context *msg_ctx,
 {
 	NTSTATUS status = NT_STATUS_OK;
 	int ret;
+
+	/*
+	 * The main process thread should never
+	 * allow per_thread_cwd_enable() to be
+	 * called.
+	 */
+	per_thread_cwd_disable();
 
 	if (reinit_after_fork_pipe[1] != -1) {
 		close(reinit_after_fork_pipe[1]);
@@ -1071,7 +1079,7 @@ bool fcntl_getlock(int fd, int op, off_t *poffset, off_t *pcount, int *ptype, pi
 }
 
 #if defined(HAVE_OFD_LOCKS)
-int map_process_lock_to_ofd_lock(int op, bool *use_ofd_locks)
+int map_process_lock_to_ofd_lock(int op)
 {
 	switch (op) {
 	case F_GETLK:
@@ -1087,16 +1095,13 @@ int map_process_lock_to_ofd_lock(int op, bool *use_ofd_locks)
 		op = F_OFD_SETLKW;
 		break;
 	default:
-		*use_ofd_locks = false;
 		return -1;
 	}
-	*use_ofd_locks = true;
 	return op;
 }
 #else /* HAVE_OFD_LOCKS */
-int map_process_lock_to_ofd_lock(int op, bool *use_ofd_locks)
+int map_process_lock_to_ofd_lock(int op)
 {
-	*use_ofd_locks = false;
 	return op;
 }
 #endif /* HAVE_OFD_LOCKS */
@@ -2140,6 +2145,32 @@ struct security_unix_token *copy_unix_token(TALLOC_CTX *ctx, const struct securi
 		cpy->groups = NULL;
 	}
 	return cpy;
+}
+
+/****************************************************************************
+ Return a root token
+****************************************************************************/
+
+struct security_unix_token *root_unix_token(TALLOC_CTX *mem_ctx)
+{
+	struct security_unix_token *t = NULL;
+
+	t = talloc_zero(mem_ctx, struct security_unix_token);
+	if (t == NULL) {
+		return NULL;
+	}
+
+	/*
+	 * This is not needed, but lets make it explicit, not implicit.
+	 */
+	*t = (struct security_unix_token) {
+		.uid = 0,
+		.gid = 0,
+		.ngroups = 0,
+		.groups = NULL
+	};
+
+	return t;
 }
 
 /****************************************************************************

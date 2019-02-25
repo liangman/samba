@@ -40,8 +40,12 @@
 
 static void PyErr_SetDsExtendedError(enum drsuapi_DsExtendedError ext_err, const char *error_description)
 {
-	PyObject *error = PyObject_GetAttrString(PyImport_ImportModule("samba"),
-						 "DsExtendedError");
+	PyObject *mod = NULL;
+	PyObject *error = NULL;
+	mod = PyImport_ImportModule("samba");
+	if (mod) {
+		error = PyObject_GetAttrString(mod, "DsExtendedError");
+	}
 	if (error_description == NULL) {
 		switch (ext_err) {
 			/* Copied out of ndr_drsuapi.c:ndr_print_drsuapi_DsExtendedError() */
@@ -98,10 +102,17 @@ static void PyErr_SetDsExtendedError(enum drsuapi_DsExtendedError ext_err, const
 				break;
 		}
 	}
-	PyErr_SetObject(error,
+	if (error) {
+		PyObject *value =
 			Py_BuildValue(discard_const_p(char, "(i,s)"),
 				      ext_err,
-				      error_description));
+				      error_description);
+		PyErr_SetObject(error, value);
+		if (value) {
+			Py_DECREF(value);
+		}
+		Py_DECREF(error);
+	}
 }
 
 static PyObject *py_net_join_member(py_net_Object *self, PyObject *args, PyObject *kwargs)
@@ -161,7 +172,8 @@ static PyObject *py_net_change_password(py_net_Object *self, PyObject *args, PyO
 	const char *newpass = NULL;
 	const char *oldpass = NULL;
 	ZERO_STRUCT(r);
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "es|esss:change_password",
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, PYARG_STR_UNI
+					 "|"PYARG_STR_UNI"ss:change_password",
 					 discard_const_p(char *, kwnames),
 					 "utf8",
 					 &newpass,
@@ -549,7 +561,7 @@ static PyObject *py_net_replicate_chunk(py_net_Object *self, PyObject *args, PyO
 	s->chunk.req5 = NULL;
 	s->chunk.req8 = NULL;
 	s->chunk.req10 = NULL;
-	if (py_req) {
+	if (py_req != Py_None) {
 		switch (req_level) {
 		case 0:
 			break;

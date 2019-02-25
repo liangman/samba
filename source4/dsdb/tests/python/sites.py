@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Unit tests for sites manipulation in samba
 # Copyright (C) Matthieu Patou <mat@matws.net> 2011
@@ -165,7 +165,7 @@ class SimpleSubnetTests(SitesBaseTests):
 
         sites = ret[0]['siteObject']
         self.assertEqual(len(sites), 1)
-        self.assertEqual(sites[0],
+        self.assertEqual(str(sites[0]),
                          'CN=testsite2,CN=Sites,%s' % self.ldb.get_config_basedn())
 
         self.assertRaises(subnets.SubnetAlreadyExists,
@@ -219,7 +219,7 @@ class SimpleSubnetTests(SitesBaseTests):
                              ("subnet rename by non-admin failed "
                               "in the wrong way: %s" % e))
         else:
-            self.fail("subnet rename by non-admin succeeded: %s" % e)
+            self.fail("subnet rename by non-admin succeeded")
 
         ret = self.ldb.search(base=basedn, scope=SCOPE_SUBTREE,
                               expression='(&(objectclass=subnet)(cn=%s))' % cidr)
@@ -241,7 +241,7 @@ class SimpleSubnetTests(SitesBaseTests):
                              ("subnet delete by non-admin failed "
                               "in the wrong way: %s" % e))
         else:
-            self.fail("subnet delete by non-admin succeeded: %s" % e)
+            self.fail("subnet delete by non-admin succeeded:")
 
         ret = self.ldb.search(base=basedn, scope=SCOPE_SUBTREE,
                               expression='(&(objectclass=subnet)(cn=%s))' % cidr)

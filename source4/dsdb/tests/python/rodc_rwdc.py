@@ -27,9 +27,14 @@ from samba.credentials import Credentials, DONT_USE_KERBEROS, MUST_USE_KERBEROS
 from samba import gensec, dsdb
 from ldb import SCOPE_BASE, LdbError, ERR_INVALID_CREDENTIALS
 from samba.dcerpc import security, samr
+import os
 
 import password_lockout_base
 
+def adjust_cmd_for_py_version(parts):
+    if os.getenv("PYTHON", None):
+        parts.insert(0, os.environ["PYTHON"])
+    return parts
 
 def passwd_encode(pw):
     return base64.b64encode(('"%s"' % pw).encode('utf-16-le')).decode('utf8')
@@ -73,10 +78,10 @@ def set_auto_replication(dc, allow):
 
     for opt in ['DISABLE_INBOUND_REPL',
                 'DISABLE_OUTBOUND_REPL']:
-        cmd = ['bin/samba-tool',
+        cmd = adjust_cmd_for_py_version(['bin/samba-tool',
                'drs', 'options',
                credstring, dc,
-               "--dsa-option=%s%s" % (on_or_off, opt)]
+               "--dsa-option=%s%s" % (on_or_off, opt)])
 
         p = subprocess.Popen(cmd,
                              stderr=subprocess.PIPE,
@@ -94,11 +99,11 @@ def preload_rodc_user(user_dn):
                                CREDS.get_password())
 
     set_auto_replication(RWDC, True)
-    cmd = ['bin/samba-tool',
+    cmd = adjust_cmd_for_py_version(['bin/samba-tool',
            'rodc', 'preload',
            user_dn,
            credstring,
-           '--server', RWDC, ]
+           '--server', RWDC, ])
 
     print(' '.join(cmd))
     subprocess.check_call(cmd)
@@ -115,7 +120,6 @@ def get_server_ref_from_samdb(samdb):
 
 
 class RodcRwdcCachedTests(password_lockout_base.BasePasswordTestCase):
-    counter = itertools.count(1).next
 
     def _check_account_initial(self, dn):
         self.force_replication()
@@ -155,11 +159,11 @@ class RodcRwdcCachedTests(password_lockout_base.BasePasswordTestCase):
         # XXX feels like a horrendous way to do it.
         credstring = '-U%s%%%s' % (CREDS.get_username(),
                                    CREDS.get_password())
-        cmd = ['bin/samba-tool',
+        cmd = adjust_cmd_for_py_version(['bin/samba-tool',
                'drs', 'replicate',
                RODC, RWDC, base,
                credstring,
-               '--sync-forced']
+               '--sync-forced'])
 
         p = subprocess.Popen(cmd,
                              stderr=subprocess.PIPE,
@@ -686,7 +690,7 @@ class RodcRwdcCachedTests(password_lockout_base.BasePasswordTestCase):
 
 
 class RodcRwdcTests(password_lockout_base.BasePasswordTestCase):
-    counter = itertools.count(1).next
+    counter = itertools.count(1, 1)
 
     def force_replication(self, base=None):
         if base is None:
@@ -695,11 +699,11 @@ class RodcRwdcTests(password_lockout_base.BasePasswordTestCase):
         # XXX feels like a horrendous way to do it.
         credstring = '-U%s%%%s' % (CREDS.get_username(),
                                    CREDS.get_password())
-        cmd = ['bin/samba-tool',
+        cmd = adjust_cmd_for_py_version(['bin/samba-tool',
                'drs', 'replicate',
                RODC, RWDC, base,
                credstring,
-               '--sync-forced']
+               '--sync-forced'])
 
         p = subprocess.Popen(cmd,
                              stderr=subprocess.PIPE,
@@ -822,7 +826,7 @@ class RodcRwdcTests(password_lockout_base.BasePasswordTestCase):
             except ldb.LdbError as e:
                 (ecode, emsg) = e.args
                 self.fail("Failed to add %s to rwdc: ldb error: %s %s" %
-                          (ecode, emsg))
+                          (o, ecode, emsg))
 
             if cross_ncs:
                 self.force_replication(base=base)
@@ -910,7 +914,7 @@ class RodcRwdcTests(password_lockout_base.BasePasswordTestCase):
                 res = self.rodc_db.search(dn,
                                           scope=ldb.SCOPE_SUBTREE,
                                           attrs=[attr])
-                results = [x[attr][0] for x in res]
+                results = [str(x[attr][0]) for x in res]
                 self.assertEqual(results, [value])
             except ldb.LdbError as e:
                 self.assertNotEqual(e.args[0], ldb.ERR_NO_SUCH_OBJECT,
@@ -955,7 +959,7 @@ class RodcRwdcTests(password_lockout_base.BasePasswordTestCase):
                 res = self.rodc_db.search(dn,
                                           scope=ldb.SCOPE_SUBTREE,
                                           attrs=[attr])
-                results = [x[attr][0] for x in res]
+                results = [str(x[attr][0]) for x in res]
                 self.assertEqual(results, [value])
             except ldb.LdbError as e:
                 self.assertNotEqual(e.args[0], ldb.ERR_NO_SUCH_OBJECT,
@@ -982,7 +986,7 @@ class RodcRwdcTests(password_lockout_base.BasePasswordTestCase):
         self._test_add_modify_delete()
 
     def _new_user(self):
-        username = "u%sX%s" % (self.tag[:12], self.counter())
+        username = "u%sX%s" % (self.tag[:12], next(self.counter))
         password = 'password#1'
         dn = 'CN=%s,CN=Users,%s' % (username, self.base_dn)
         o = {

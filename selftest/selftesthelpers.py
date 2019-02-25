@@ -92,7 +92,7 @@ def add_prefix(prefix, env, support_list=False):
         listopt = "$LISTOPT "
     else:
         listopt = ""
-    return "%s/selftest/filter-subunit %s--fail-on-empty --prefix=\"%s.\" --suffix=\"(%s)\"" % (srcdir(), listopt, prefix, env)
+    return "%s %s/selftest/filter-subunit %s--fail-on-empty --prefix=\"%s.\" --suffix=\"(%s)\"" % (python, srcdir(), listopt, prefix, env)
 
 
 def plantestsuite_loadlist(name, env, cmdline):
@@ -136,18 +136,22 @@ def planperltestsuite(name, path):
         skiptestsuite(name, "Test::More not available")
 
 
-def planpythontestsuite(env, module, name=None, extra_path=[], py3_compatible=False):
+def planpythontestsuite(env, module, name=None, extra_path=None,
+                        py3_compatible=False):
     if name is None:
         name = module
-    pypath = list(extra_path)
     args = [python, "-m", "samba.subunit.run", "$LISTOPT", "$LOADLIST", module]
-    if pypath:
-        args.insert(0, "PYTHONPATH=%s" % ":".join(["$PYTHONPATH"] + pypath))
-    plantestsuite_loadlist(name, env, args)
+    if extra_path:
+        pypath = ["PYTHONPATH=$PYTHONPATH:%s" % ":".join(extra_path)]
+    else:
+        pypath = []
+
+    plantestsuite_loadlist(name, env, pypath + args)
     if py3_compatible and extra_python is not None:
         # Plan one more test for Python 3 compatible module
         args[0] = extra_python
-        plantestsuite_loadlist(name + ".python3", env, args)
+        python_name = os.path.basename(extra_python)
+        plantestsuite_loadlist(name + "." + python_name, env, pypath + args)
 
 
 def get_env_torture_options():
@@ -203,3 +207,4 @@ smbcquotas = binpath('smbcquotas')
 smbget = binpath('smbget')
 rpcclient = binpath('rpcclient')
 smbcacls = binpath('smbcacls')
+smbcontrol = binpath('smbcontrol')

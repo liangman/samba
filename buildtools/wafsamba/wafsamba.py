@@ -10,6 +10,7 @@ TaskGen.task_gen.apply_verif = Utils.nada
 
 # bring in the other samba modules
 from samba_utils import *
+from samba_utils import symlink
 from samba_version import *
 from samba_autoconf import *
 from samba_patterns import *
@@ -32,10 +33,6 @@ import symbols
 import pkgconfig
 import configure_file
 import samba_waf18
-
-# some systems have broken threading in python
-if os.environ.get('WAF_NOTHREADS') == '1':
-    import nothreads
 
 LIB_PATH="shared"
 
@@ -65,7 +62,7 @@ def SAMBA_BUILD_ENV(conf):
     for (source, target) in [('shared', 'shared'), ('modules', 'modules'), ('python', 'python')]:
         link_target = os.path.join(conf.env.BUILD_DIRECTORY, 'default/' + target)
         if not os.path.lexists(link_target):
-            os.symlink('../' + source, link_target)
+            symlink('../' + source, link_target)
 
     # get perl to put the blib files in the build directory
     blib_bld = os.path.join(conf.env.BUILD_DIRECTORY, 'default/pidl/blib')
@@ -327,7 +324,7 @@ def SAMBA_LIBRARY(bld, libname, source,
         t.link_name = link_name
 
     if pc_files is not None and not private_library:
-        if pyembed and bld.env['IS_EXTRA_PYTHON']:
+        if pyembed:
             bld.PKG_CONFIG_FILES(pc_files, vnum=vnum, extra_name=bld.env['PYTHON_SO_ABI_FLAG'])
         else:
             bld.PKG_CONFIG_FILES(pc_files, vnum=vnum)
@@ -725,22 +722,6 @@ Build.BuildContext.SET_BUILD_GROUP = SET_BUILD_GROUP
 
 
 
-@conf
-def ENABLE_TIMESTAMP_DEPENDENCIES(conf):
-    """use timestamps instead of file contents for deps
-    this currently doesn't work"""
-    def h_file(filename):
-        import stat
-        st = os.stat(filename)
-        if stat.S_ISDIR(st[stat.ST_MODE]): raise IOError('not a file')
-        m = Utils.md5()
-        m.update(str(st.st_mtime))
-        m.update(str(st.st_size))
-        m.update(filename)
-        return m.digest()
-    Utils.h_file = h_file
-
-
 def SAMBA_SCRIPT(bld, name, pattern, installdir, installname=None):
     '''used to copy scripts from the source tree into the build directory
        for use by selftest'''
@@ -759,10 +740,10 @@ def SAMBA_SCRIPT(bld, name, pattern, installdir, installname=None):
         link_dst = os.path.join(tgtdir, os.path.basename(iname))
         if os.path.islink(link_dst) and os.readlink(link_dst) == link_src:
             continue
-        if os.path.exists(link_dst):
+        if os.path.islink(link_dst):
             os.unlink(link_dst)
         Logs.info("symlink: %s -> %s/%s" % (s, installdir, iname))
-        os.symlink(link_src, link_dst)
+        symlink(link_src, link_dst)
 Build.BuildContext.SAMBA_SCRIPT = SAMBA_SCRIPT
 
 
@@ -776,10 +757,10 @@ def copy_and_fix_python_path(task):
         replacement="""sys.path.insert(0, "%s")
 sys.path.insert(1, "%s")""" % (task.env["PYTHONARCHDIR"], task.env["PYTHONDIR"])
 
-    if task.env["PYTHON"][0] == "/":
-        replacement_shebang = "#!%s\n" % task.env["PYTHON"]
+    if task.env["PYTHON"][0].startswith("/"):
+        replacement_shebang = "#!%s\n" % task.env["PYTHON"][0]
     else:
-        replacement_shebang = "#!/usr/bin/env %s\n" % task.env["PYTHON"]
+        replacement_shebang = "#!/usr/bin/env %s\n" % task.env["PYTHON"][0]
 
     installed_location=task.outputs[0].bldpath(task.env)
     source_file = open(task.inputs[0].srcpath(task.env))
@@ -787,7 +768,7 @@ sys.path.insert(1, "%s")""" % (task.env["PYTHONARCHDIR"], task.env["PYTHONDIR"])
     lineno = 0
     for line in source_file:
         newline = line
-        if (lineno == 0 and task.env["PYTHON_SPECIFIED"] is True and
+        if (lineno == 0 and
                 line[:2] == "#!"):
             newline = replacement_shebang
         elif pattern in line:
@@ -940,7 +921,7 @@ def SAMBAMANPAGES(bld, manpages, extra_source=None):
     '''build and install manual pages'''
     bld.env.SAMBA_EXPAND_XSL = bld.srcnode.abspath() + '/docs-xml/xslt/expand-sambadoc.xsl'
     bld.env.SAMBA_MAN_XSL = bld.srcnode.abspath() + '/docs-xml/xslt/man.xsl'
-    bld.env.SAMBA_CATALOG = bld.srcnode.abspath() + '/bin/default/docs-xml/build/catalog.xml'
+    bld.env.SAMBA_CATALOG = bld.bldnode.abspath() + '/docs-xml/build/catalog.xml'
     bld.env.SAMBA_CATALOGS = 'file:///etc/xml/catalog file:///usr/local/share/xml/catalog file://' + bld.env.SAMBA_CATALOG
 
     for m in manpages.split():

@@ -33,7 +33,6 @@
 #include "libcli/security/security.h"
 #include "librpc/gen_ndr/ndr_dfsblobs.h"
 #include "lib/tsocket/tsocket.h"
-#include "lib/pthreadpool/pthreadpool_tevent.h"
 
 /**********************************************************************
  Parse a DFS pathname of the form \hostname\service\reqpath
@@ -253,43 +252,17 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	const char *vfs_user;
 	struct smbd_server_connection *sconn;
 	const char *servicename = lp_const_servicename(snum);
-	const struct security_unix_token *unix_token = NULL;
-	struct tevent_context *user_ev_ctx = NULL;
-	struct pthreadpool_tevent *user_tp_chdir_safe = NULL;
-	struct pthreadpool_tevent *root_tp_chdir_safe = NULL;
-	int ret;
 
 	sconn = talloc_zero(ctx, struct smbd_server_connection);
 	if (sconn == NULL) {
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	sconn->raw_ev_ctx = samba_tevent_context_init(sconn);
-	if (sconn->raw_ev_ctx == NULL) {
+	sconn->ev_ctx = samba_tevent_context_init(sconn);
+	if (sconn->ev_ctx == NULL) {
 		TALLOC_FREE(sconn);
 		return NT_STATUS_NO_MEMORY;
 	}
-
-	sconn->root_ev_ctx = smbd_impersonate_root_create(sconn->raw_ev_ctx);
-	if (sconn->root_ev_ctx == NULL) {
-		TALLOC_FREE(sconn);
-		return NT_STATUS_NO_MEMORY;
-	}
-	sconn->guest_ev_ctx = smbd_impersonate_guest_create(sconn->raw_ev_ctx);
-	if (sconn->guest_ev_ctx == NULL) {
-		TALLOC_FREE(sconn);
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	/*
-	 * We only provide sync threadpools.
-	 */
-	ret = pthreadpool_tevent_init(sconn, 0, &sconn->sync_thread_pool);
-	if (ret != 0) {
-		TALLOC_FREE(sconn);
-		return NT_STATUS_NO_MEMORY;
-	}
-	sconn->raw_thread_pool = sconn->sync_thread_pool;
 
 	sconn->msg_ctx = msg;
 
@@ -333,7 +306,6 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 			TALLOC_FREE(conn);
 			return NT_STATUS_NO_MEMORY;
 		}
-		unix_token = conn->session_info->unix_token;
 		/* unix_info could be NULL in session_info */
 		if (conn->session_info->unix_info != NULL) {
 			vfs_user = conn->session_info->unix_info->unix_name;
@@ -343,82 +315,6 @@ static NTSTATUS create_conn_struct_as_root(TALLOC_CTX *ctx,
 	} else {
 		/* use current authenticated user in absence of session_info */
 		vfs_user = get_current_username();
-	}
-
-	if (unix_token == NULL) {
-		unix_token = get_current_utok(conn);
-	}
-
-	/*
-	 * The impersonation has to be done by the caller
-	 * of create_conn_struct_tos[_cwd]().
-	 *
-	 * Note: the context can't be changed anyway
-	 * as we're using our own tevent_context
-	 * and not a global one were other requests
-	 * could change the current unix token.
-	 *
-	 * We just use a wrapper tevent_context in order
-	 * to avoid crashes because TALLOC_FREE(conn->user_ev_ctx)
-	 * would also remove sconn->raw_ev_ctx.
-	 */
-	user_ev_ctx = smbd_impersonate_debug_create(sconn->raw_ev_ctx,
-						    "FAKE impersonation",
-						    DBGLVL_DEBUG);
-	if (user_ev_ctx == NULL) {
-		TALLOC_FREE(conn);
-		return NT_STATUS_NO_MEMORY;
-	}
-	SMB_ASSERT(talloc_reparent(sconn->raw_ev_ctx, conn, user_ev_ctx));
-
-	user_tp_chdir_safe = smbd_impersonate_tp_current_create(conn,
-						sconn->sync_thread_pool,
-						conn,
-						conn->vuid,
-						true, /* chdir_safe */
-						unix_token);
-	if (user_tp_chdir_safe == NULL) {
-		TALLOC_FREE(conn);
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	root_tp_chdir_safe = smbd_impersonate_tp_become_create(conn,
-						sconn->sync_thread_pool,
-						true, /* chdir_safe */
-						become_root,
-						unbecome_root);
-	if (root_tp_chdir_safe == NULL) {
-		TALLOC_FREE(conn);
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	/*
-	 * We only use the chdir_safe wrappers
-	 * for everything in order to keep
-	 * it simple.
-	 */
-	conn->user_vfs_evg = smb_vfs_ev_glue_create(conn,
-						    user_ev_ctx,
-						    user_tp_chdir_safe,
-						    user_tp_chdir_safe,
-						    user_tp_chdir_safe,
-						    sconn->root_ev_ctx,
-						    root_tp_chdir_safe,
-						    root_tp_chdir_safe,
-						    root_tp_chdir_safe);
-	if (conn->user_vfs_evg == NULL) {
-		TALLOC_FREE(conn);
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	SMB_ASSERT(talloc_reparent(conn, conn->user_vfs_evg, user_ev_ctx));
-	SMB_ASSERT(talloc_reparent(conn, conn->user_vfs_evg, user_tp_chdir_safe));
-	SMB_ASSERT(talloc_reparent(conn, conn->user_vfs_evg, root_tp_chdir_safe));
-
-	conn->user_ev_ctx = smb_vfs_ev_glue_ev_ctx(conn->user_vfs_evg);
-	if (conn->user_ev_ctx == NULL) {
-		TALLOC_FREE(conn);
-		return NT_STATUS_INTERNAL_ERROR;
 	}
 
 	set_conn_connectpath(conn, connpath);

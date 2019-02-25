@@ -19,6 +19,7 @@
 */
 
 #include "includes.h"
+#include "globals.h"
 #include "system/filesys.h"
 #include "librpc/gen_ndr/ndr_xattr.h"
 #include "librpc/gen_ndr/ioctl.h"
@@ -760,11 +761,10 @@ struct dos_mode_at_state {
 static void dos_mode_at_vfs_get_dosmode_done(struct tevent_req *subreq);
 
 struct tevent_req *dos_mode_at_send(TALLOC_CTX *mem_ctx,
-				    struct smb_vfs_ev_glue *evg,
+				    struct tevent_context *ev,
 				    files_struct *dir_fsp,
 				    struct smb_filename *smb_fname)
 {
-	struct tevent_context *ev = smb_vfs_ev_glue_ev_ctx(evg);
 	struct tevent_req *req = NULL;
 	struct dos_mode_at_state *state = NULL;
 	struct tevent_req *subreq = NULL;
@@ -788,7 +788,7 @@ struct tevent_req *dos_mode_at_send(TALLOC_CTX *mem_ctx,
 	}
 
 	subreq = SMB_VFS_GET_DOS_ATTRIBUTES_SEND(state,
-						 evg,
+						 ev,
 						 dir_fsp,
 						 smb_fname);
 	if (tevent_req_nomem(subreq, req)) {
@@ -811,6 +811,13 @@ static void dos_mode_at_vfs_get_dosmode_done(struct tevent_req *subreq)
 	struct smb_filename *smb_path = NULL;
 	struct vfs_aio_state aio_state;
 	NTSTATUS status;
+	bool ok;
+
+	/*
+	 * Make sure we run as the user again
+	 */
+	ok = change_to_user_by_fsp(state->dir_fsp);
+	SMB_ASSERT(ok);
 
 	status = SMB_VFS_GET_DOS_ATTRIBUTES_RECV(subreq,
 						 &aio_state,

@@ -36,8 +36,14 @@
 #include <standards.h>
 #endif
 
-/* Needs to be defined before std*.h and string*.h are included */
-#define __STDC_WANT_LIB_EXT1__ 1
+/*
+ * Needs to be defined before std*.h and string*.h are included
+ * As it's also needed when Python.h is the first header we
+ * require a global -D__STDC_WANT_LIB_EXT1__=1
+ */
+#ifndef __STDC_WANT_LIB_EXT1__
+#error -D__STDC_WANT_LIB_EXT1__=1 required
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +62,7 @@
 #ifdef HAVE_INTTYPES_H
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
-#elif HAVE_STDINT_H
+#elif defined(HAVE_STDINT_H)
 #include <stdint.h>
 /* force off HAVE_INTTYPES_H so that roken doesn't try to include both,
    which causes a warning storm on irix */
@@ -160,6 +166,10 @@
 
 #ifdef HAVE_BSD_UNISTD_H
 #include <bsd/unistd.h>
+#endif
+
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
 #endif
 
 #ifdef HAVE_STRING_H
@@ -272,14 +282,14 @@ char *rep_strndup(const char *s, size_t n);
 size_t rep_strnlen(const char *s, size_t n);
 #endif
 
-#if !HAVE_DECL_ENVIRON
-#ifdef __APPLE__
-#include <crt_externs.h>
-#define environ (*_NSGetEnviron())
-#else
+#if !defined(HAVE_DECL_ENVIRON)
+# ifdef __APPLE__
+#   include <crt_externs.h>
+#   define environ (*_NSGetEnviron())
+# else /* __APPLE__ */
 extern char **environ;
-#endif
-#endif
+# endif /* __APPLE */
+#endif /* !defined(HAVE_DECL_ENVIRON) */
 
 #ifndef HAVE_SETENV
 #define setenv rep_setenv
@@ -801,38 +811,40 @@ typedef unsigned long long ptrdiff_t ;
 #define __location__ __FILE__ ":" __LINESTR__
 #endif
 
-/** 
- * zero a structure 
+/**
+ * Zero a structure.
  */
-#define ZERO_STRUCT(x) memset((char *)&(x), 0, sizeof(x))
-
-/** 
- * zero a structure given a pointer to the structure 
- */
-#define ZERO_STRUCTP(x) do { if ((x) != NULL) memset((char *)(x), 0, sizeof(*(x))); } while(0)
-
-/** 
- * zero a structure given a pointer to the structure - no zero check 
- */
-#define ZERO_STRUCTPN(x) memset((char *)(x), 0, sizeof(*(x)))
-
-/* zero an array - note that sizeof(array) must work - ie. it must not be a
-   pointer */
-#define ZERO_ARRAY(x) memset((char *)(x), 0, sizeof(x))
+#define ZERO_STRUCT(x) memset_s((char *)&(x), sizeof(x), 0, sizeof(x))
 
 /**
- * work out how many elements there are in a static array 
+ * Zero a structure given a pointer to the structure.
+ */
+#define ZERO_STRUCTP(x) do { \
+	if ((x) != NULL) { \
+		memset_s((char *)(x), sizeof(*(x)), 0, sizeof(*(x))); \
+	} \
+} while(0)
+
+/**
+ * Zero a structure given a pointer to the structure - no zero check
+ */
+#define ZERO_STRUCTPN(x) memset_s((char *)(x), sizeof(*(x)), 0, sizeof(*(x)))
+
+/**
+ * Zero an array - note that sizeof(array) must work - ie. it must not be a
+ * pointer
+ */
+#define ZERO_ARRAY(x) memset_s((char *)(x), sizeof(x), 0, sizeof(x))
+
+/**
+ * Work out how many elements there are in a static array.
  */
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
 
-/** 
- * pointer difference macro 
+/**
+ * Pointer difference macro
  */
 #define PTR_DIFF(p1,p2) ((ptrdiff_t)(((const char *)(p1)) - (const char *)(p2)))
-
-#if MMAP_BLACKLIST
-#undef HAVE_MMAP
-#endif
 
 #ifdef __COMPAR_FN_T
 #define QSORT_CAST (__compar_fn_t)
@@ -931,6 +943,11 @@ void rep_setproctitle_init(int argc, char *argv[], char *envp[]);
 #ifndef HAVE_MEMSET_S
 #define memset_s rep_memset_s
 int rep_memset_s(void *dest, size_t destsz, int ch, size_t count);
+#endif
+
+#ifndef HAVE_GETPROGNAME
+#define getprogname rep_getprogname
+const char *rep_getprogname(void);
 #endif
 
 #ifndef FALL_THROUGH

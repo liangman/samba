@@ -18,13 +18,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-
+from __future__ import print_function
 import os
 import samba.getopt as options
 import ldb
 import re
 import xml.etree.ElementTree as ET
 import shutil
+import tempfile
 
 from samba.auth import system_session
 from samba.netcmd import (
@@ -42,7 +43,8 @@ import samba.auth
 from samba.auth import AUTH_SESSION_INFO_DEFAULT_GROUPS, AUTH_SESSION_INFO_AUTHENTICATED, AUTH_SESSION_INFO_SIMPLE_PRIVILEGES
 from samba.netcmd.common import netcmd_finddc
 from samba import policy
-from samba import smb
+from samba.samba3 import param as s3param
+from samba.samba3 import libsmb_samba_internal as libsmb
 from samba import NTSTATUSError
 import uuid
 from samba.ntacls import dsacl2fsacl
@@ -59,16 +61,6 @@ from samba.gp_parse.gp_ini import (
 from samba.gp_parse.gp_csv import GPAuditCsvParser
 from samba.gp_parse.gp_inf import GptTmplInfParser
 from samba.gp_parse.gp_aas import GPAasParser
-
-
-def samdb_connect(ctx):
-    '''make a ldap connection to the server'''
-    try:
-        ctx.samdb = SamDB(url=ctx.url,
-                          session_info=system_session(),
-                          credentials=ctx.creds, lp=ctx.lp)
-    except Exception as e:
-        raise CommandError("LDAP connection to %s failed " % ctx.url, e)
 
 
 def attr_default(msg, attrname, default):
@@ -212,7 +204,7 @@ def del_gpo_link(samdb, container_dn, gpo):
     found = False
     gpo_dn = str(get_gpo_dn(samdb, gpo))
     if 'gPLink' in msg:
-        gplist = parse_gplink(msg['gPLink'][0])
+        gplist = parse_gplink(str(msg['gPLink'][0]))
         for g in gplist:
             if g['dn'].lower() == gpo_dn.lower():
                 gplist.remove(g)
@@ -284,18 +276,18 @@ def backup_directory_remote_to_local(conn, remotedir, localdir):
         l_dir = l_dirs.pop()
 
         dirlist = conn.list(r_dir, attribs=attr_flags)
-        dirlist.sort()
+        dirlist.sort(key=lambda x : x['name'])
         for e in dirlist:
             r_name = r_dir + '\\' + e['name']
             l_name = os.path.join(l_dir, e['name'])
 
-            if e['attrib'] & smb.FILE_ATTRIBUTE_DIRECTORY:
+            if e['attrib'] & libsmb.FILE_ATTRIBUTE_DIRECTORY:
                 r_dirs.append(r_name)
                 l_dirs.append(l_name)
                 os.mkdir(l_name)
             else:
                 data = conn.loadfile(r_name)
-                with file(l_name + SUFFIX, 'w') as f:
+                with open(l_name + SUFFIX, 'wb') as f:
                     f.write(data)
 
                 parser = find_parser(e['name'])
@@ -303,10 +295,10 @@ def backup_directory_remote_to_local(conn, remotedir, localdir):
                 parser.write_xml(l_name + '.xml')
 
 
-attr_flags = smb.FILE_ATTRIBUTE_SYSTEM | \
-             smb.FILE_ATTRIBUTE_DIRECTORY | \
-             smb.FILE_ATTRIBUTE_ARCHIVE | \
-             smb.FILE_ATTRIBUTE_HIDDEN
+attr_flags = libsmb.FILE_ATTRIBUTE_SYSTEM | \
+             libsmb.FILE_ATTRIBUTE_DIRECTORY | \
+             libsmb.FILE_ATTRIBUTE_ARCHIVE | \
+             libsmb.FILE_ATTRIBUTE_HIDDEN
 
 
 def copy_directory_remote_to_local(conn, remotedir, localdir):
@@ -319,18 +311,18 @@ def copy_directory_remote_to_local(conn, remotedir, localdir):
         l_dir = l_dirs.pop()
 
         dirlist = conn.list(r_dir, attribs=attr_flags)
-        dirlist.sort()
+        dirlist.sort(key=lambda x : x['name'])
         for e in dirlist:
             r_name = r_dir + '\\' + e['name']
             l_name = os.path.join(l_dir, e['name'])
 
-            if e['attrib'] & smb.FILE_ATTRIBUTE_DIRECTORY:
+            if e['attrib'] & libsmb.FILE_ATTRIBUTE_DIRECTORY:
                 r_dirs.append(r_name)
                 l_dirs.append(l_name)
                 os.mkdir(l_name)
             else:
                 data = conn.loadfile(r_name)
-                open(l_name, 'w').write(data)
+                open(l_name, 'wb').write(data)
 
 
 def copy_directory_local_to_remote(conn, localdir, remotedir,
@@ -358,7 +350,7 @@ def copy_directory_local_to_remote(conn, localdir, remotedir,
                     if not ignore_existing:
                         raise
             else:
-                data = open(l_name, 'r').read()
+                data = open(l_name, 'rb').read()
                 conn.savefile(r_name, data)
 
 
@@ -370,8 +362,65 @@ def create_directory_hier(conn, remotedir):
         if not conn.chkpath(path):
             conn.mkdir(path)
 
+def smb_connection(dc_hostname, service, lp, creds, sign=False):
+    # SMB connect to DC
+    try:
+        # the SMB bindings rely on having a s3 loadparm
+        s3_lp = s3param.get_context()
+        s3_lp.load(lp.configfile)
+        conn = libsmb.Conn(dc_hostname, service, lp=s3_lp, creds=creds, sign=sign)
+    except Exception:
+        raise CommandError("Error connecting to '%s' using SMB" % dc_hostname)
+    return conn
 
-class cmd_listall(Command):
+
+class GPOCommand(Command):
+    def construct_tmpdir(self, tmpdir, gpo):
+        """Ensure that the temporary directory structure used in fetch,
+        backup, create, and restore is consistent.
+
+        If --tmpdir is used the named directory must be present, which may
+        contain a 'policy' subdirectory, but 'policy' must not itself have
+        a subdirectory with the gpo name. The policy and gpo directories
+        will be created.
+
+        If --tmpdir is not used, a temporary directory is securely created.
+        """
+        if tmpdir is None:
+            tmpdir = tempfile.mkdtemp()
+            print("Using temporary directory %s (use --tmpdir to change)" % tmpdir,
+                  file=self.outf)
+
+        if not os.path.isdir(tmpdir):
+            raise CommandError("Temporary directory '%s' does not exist" % tmpdir)
+
+        localdir = os.path.join(tmpdir, "policy")
+        if not os.path.isdir(localdir):
+            os.mkdir(localdir)
+
+        gpodir = os.path.join(localdir, gpo)
+        if os.path.isdir(gpodir):
+            raise CommandError(
+                "GPO directory '%s' already exists, refusing to overwrite" % gpodir)
+
+        try:
+            os.mkdir(gpodir)
+        except (IOError, OSError) as e:
+            raise CommandError("Error creating teporary GPO directory", e)
+
+        return tmpdir, gpodir
+
+    def samdb_connect(self):
+        '''make a ldap connection to the server'''
+        try:
+            self.samdb = SamDB(url=self.url,
+                               session_info=system_session(),
+                               credentials=self.creds, lp=self.lp)
+        except Exception as e:
+            raise CommandError("LDAP connection to %s failed " % self.url, e)
+
+
+class cmd_listall(GPOCommand):
     """List all GPOs."""
 
     synopsis = "%prog [options]"
@@ -394,7 +443,7 @@ class cmd_listall(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         msg = get_gpo_info(self.samdb, None)
 
@@ -408,7 +457,7 @@ class cmd_listall(Command):
             self.outf.write("\n")
 
 
-class cmd_list(Command):
+class cmd_list(GPOCommand):
     """List GPOs for an account."""
 
     synopsis = "%prog <username> [options]"
@@ -432,7 +481,7 @@ class cmd_list(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         try:
             msg = self.samdb.search(expression='(&(|(samAccountName=%s)(samAccountName=%s$))(objectClass=User))' %
@@ -467,7 +516,7 @@ class cmd_list(Command):
         while True:
             msg = self.samdb.search(base=dn, scope=ldb.SCOPE_BASE, attrs=['gPLink', 'gPOptions'])[0]
             if 'gPLink' in msg:
-                glist = parse_gplink(msg['gPLink'][0])
+                glist = parse_gplink(str(msg['gPLink'][0]))
                 for g in glist:
                     if not inherit and not (g['options'] & dsdb.GPLINK_OPT_ENFORCE):
                         continue
@@ -525,7 +574,7 @@ class cmd_list(Command):
             self.outf.write("    %s %s\n" % (g[0], g[1]))
 
 
-class cmd_show(Command):
+class cmd_show(GPOCommand):
     """Show information for a GPO."""
 
     synopsis = "%prog <gpo> [options]"
@@ -549,7 +598,7 @@ class cmd_show(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         try:
             msg = get_gpo_info(self.samdb, gpo)[0]
@@ -573,7 +622,7 @@ class cmd_show(Command):
         self.outf.write("\n")
 
 
-class cmd_getlink(Command):
+class cmd_getlink(GPOCommand):
     """List GPO Links for a container."""
 
     synopsis = "%prog <container_dn> [options]"
@@ -598,7 +647,7 @@ class cmd_getlink(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         try:
             msg = self.samdb.search(base=container_dn, scope=ldb.SCOPE_BASE,
@@ -609,7 +658,7 @@ class cmd_getlink(Command):
 
         if msg['gPLink']:
             self.outf.write("GPO(s) linked to DN %s\n" % container_dn)
-            gplist = parse_gplink(msg['gPLink'][0])
+            gplist = parse_gplink(str(msg['gPLink'][0]))
             for g in gplist:
                 msg = get_gpo_info(self.samdb, dn=g['dn'])
                 self.outf.write("    GPO     : %s\n" % msg[0]['name'][0])
@@ -620,7 +669,7 @@ class cmd_getlink(Command):
             self.outf.write("No GPO(s) linked to DN=%s\n" % container_dn)
 
 
-class cmd_setlink(Command):
+class cmd_setlink(GPOCommand):
     """Add or update a GPO link to a container."""
 
     synopsis = "%prog <container_dn> <gpo> [options]"
@@ -649,7 +698,7 @@ class cmd_setlink(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         gplink_options = 0
         if disabled:
@@ -675,7 +724,7 @@ class cmd_setlink(Command):
         # Update existing GPlinks or Add new one
         existing_gplink = False
         if 'gPLink' in msg:
-            gplist = parse_gplink(msg['gPLink'][0])
+            gplist = parse_gplink(str(msg['gPLink'][0]))
             existing_gplink = True
             found = False
             for g in gplist:
@@ -710,7 +759,7 @@ class cmd_setlink(Command):
         cmd_getlink().run(container_dn, H, sambaopts, credopts, versionopts)
 
 
-class cmd_dellink(Command):
+class cmd_dellink(GPOCommand):
     """Delete GPO link from a container."""
 
     synopsis = "%prog <container_dn> <gpo> [options]"
@@ -735,7 +784,7 @@ class cmd_dellink(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         # Check if valid GPO
         try:
@@ -749,7 +798,7 @@ class cmd_dellink(Command):
         cmd_getlink().run(container_dn, H, sambaopts, credopts, versionopts)
 
 
-class cmd_listcontainers(Command):
+class cmd_listcontainers(GPOCommand):
     """List all linked containers for a GPO."""
 
     synopsis = "%prog <gpo> [options]"
@@ -774,7 +823,7 @@ class cmd_listcontainers(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         msg = get_gpo_containers(self.samdb, gpo)
         if len(msg):
@@ -785,7 +834,7 @@ class cmd_listcontainers(Command):
             self.outf.write("No Containers using GPO %s\n" % gpo)
 
 
-class cmd_getinheritance(Command):
+class cmd_getinheritance(GPOCommand):
     """Get inheritance flag for a container."""
 
     synopsis = "%prog <container_dn> [options]"
@@ -810,7 +859,7 @@ class cmd_getinheritance(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         try:
             msg = self.samdb.search(base=container_dn, scope=ldb.SCOPE_BASE,
@@ -829,7 +878,7 @@ class cmd_getinheritance(Command):
             self.outf.write("Container has GPO_INHERIT\n")
 
 
-class cmd_setinheritance(Command):
+class cmd_setinheritance(GPOCommand):
     """Set inheritance flag on a container."""
 
     synopsis = "%prog <container_dn> <block|inherit> [options]"
@@ -861,7 +910,7 @@ class cmd_setinheritance(Command):
 
         self.url = dc_url(self.lp, self.creds, H)
 
-        samdb_connect(self)
+        self.samdb_connect()
         try:
             msg = self.samdb.search(base=container_dn, scope=ldb.SCOPE_BASE,
                                     expression="(objectClass=*)",
@@ -883,7 +932,7 @@ class cmd_setinheritance(Command):
             raise CommandError("Error setting inheritance state %s" % inherit_state, e)
 
 
-class cmd_fetch(Command):
+class cmd_fetch(GPOCommand):
     """Download a GPO."""
 
     synopsis = "%prog <gpo> [options]"
@@ -914,45 +963,26 @@ class cmd_fetch(Command):
             dc_hostname = netcmd_finddc(self.lp, self.creds)
             self.url = dc_url(self.lp, self.creds, dc=dc_hostname)
 
-        samdb_connect(self)
+        self.samdb_connect()
         try:
             msg = get_gpo_info(self.samdb, gpo)[0]
         except Exception:
             raise CommandError("GPO '%s' does not exist" % gpo)
 
         # verify UNC path
-        unc = msg['gPCFileSysPath'][0]
+        unc = str(msg['gPCFileSysPath'][0])
         try:
             [dom_name, service, sharepath] = parse_unc(unc)
         except ValueError:
             raise CommandError("Invalid GPO path (%s)" % unc)
 
         # SMB connect to DC
-        try:
-            conn = smb.SMB(dc_hostname,
-                           service,
-                           lp=self.lp,
-                           creds=self.creds,
-                           sign=True)
-        except Exception:
-            raise CommandError("Error connecting to '%s' using SMB" % dc_hostname)
+        conn = smb_connection(dc_hostname, service, lp=self.lp,
+                              creds=self.creds, sign=True)
 
         # Copy GPT
-        if tmpdir is None:
-            tmpdir = "/tmp"
-        if not os.path.isdir(tmpdir):
-            raise CommandError("Temoprary directory '%s' does not exist" % tmpdir)
-
-        localdir = os.path.join(tmpdir, "policy")
-        if not os.path.isdir(localdir):
-            os.mkdir(localdir)
-
-        gpodir = os.path.join(localdir, gpo)
-        if os.path.isdir(gpodir):
-            raise CommandError("GPO directory '%s' already exists, refusing to overwrite" % gpodir)
-
+        tmpdir, gpodir = self.construct_tmpdir(tmpdir, gpo)
         try:
-            os.mkdir(gpodir)
             copy_directory_remote_to_local(conn, sharepath, gpodir)
         except Exception as e:
             # FIXME: Catch more specific exception
@@ -960,7 +990,7 @@ class cmd_fetch(Command):
         self.outf.write('GPO copied to %s\n' % gpodir)
 
 
-class cmd_backup(Command):
+class cmd_backup(GPOCommand):
     """Backup a GPO."""
 
     synopsis = "%prog <gpo> [options]"
@@ -996,41 +1026,27 @@ class cmd_backup(Command):
             dc_hostname = netcmd_finddc(self.lp, self.creds)
             self.url = dc_url(self.lp, self.creds, dc=dc_hostname)
 
-        samdb_connect(self)
+        self.samdb_connect()
         try:
             msg = get_gpo_info(self.samdb, gpo)[0]
         except Exception:
             raise CommandError("GPO '%s' does not exist" % gpo)
 
         # verify UNC path
-        unc = msg['gPCFileSysPath'][0]
+        unc = str(msg['gPCFileSysPath'][0])
         try:
             [dom_name, service, sharepath] = parse_unc(unc)
         except ValueError:
             raise CommandError("Invalid GPO path (%s)" % unc)
 
         # SMB connect to DC
-        try:
-            conn = smb.SMB(dc_hostname, service, lp=self.lp, creds=self.creds)
-        except Exception:
-            raise CommandError("Error connecting to '%s' using SMB" % dc_hostname)
+        conn = smb_connection(dc_hostname, service, lp=self.lp,
+                              creds=self.creds)
 
         # Copy GPT
-        if tmpdir is None:
-            tmpdir = "/tmp"
-        if not os.path.isdir(tmpdir):
-            raise CommandError("Temoprary directory '%s' does not exist" % tmpdir)
-
-        localdir = os.path.join(tmpdir, "policy")
-        if not os.path.isdir(localdir):
-            os.mkdir(localdir)
-
-        gpodir = os.path.join(localdir, gpo)
-        if os.path.isdir(gpodir):
-            raise CommandError("GPO directory '%s' already exists, refusing to overwrite" % gpodir)
+        tmpdir, gpodir = self.construct_tmpdir(tmpdir, gpo)
 
         try:
-            os.mkdir(gpodir)
             backup_directory_remote_to_local(conn, sharepath, gpodir)
         except Exception as e:
             # FIXME: Catch more specific exception
@@ -1109,7 +1125,7 @@ class cmd_backup(Command):
         return entities
 
 
-class cmd_create(Command):
+class cmd_create(GPOCommand):
     """Create an empty GPO."""
 
     synopsis = "%prog <displayname> [options]"
@@ -1151,7 +1167,7 @@ class cmd_create(Command):
             dc_hostname = cldap_ret.pdc_dns_name
             self.url = dc_url(self.lp, self.creds, dc=dc_hostname)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         msg = get_gpo_info(self.samdb, displayname=displayname)
         if msg.count > 0:
@@ -1167,23 +1183,10 @@ class cmd_create(Command):
         unc_path = "\\\\%s\\sysvol\\%s\\Policies\\%s" % (realm, realm, gpo)
 
         # Create GPT
-        if tmpdir is None:
-            tmpdir = "/tmp"
-        if not os.path.isdir(tmpdir):
-            raise CommandError("Temporary directory '%s' does not exist" % tmpdir)
-        self.tmpdir = tmpdir
-
-        localdir = os.path.join(tmpdir, "policy")
-        if not os.path.isdir(localdir):
-            os.mkdir(localdir)
-
-        gpodir = os.path.join(localdir, gpo)
+        self.tmpdir, gpodir = self.construct_tmpdir(tmpdir, gpo)
         self.gpodir = gpodir
-        if os.path.isdir(gpodir):
-            raise CommandError("GPO directory '%s' already exists, refusing to overwrite" % gpodir)
 
         try:
-            os.mkdir(gpodir)
             os.mkdir(os.path.join(gpodir, "Machine"))
             os.mkdir(os.path.join(gpodir, "User"))
             gpt_contents = "[General]\r\nVersion=0\r\n"
@@ -1194,10 +1197,8 @@ class cmd_create(Command):
         # Connect to DC over SMB
         [dom_name, service, sharepath] = parse_unc(unc_path)
         self.sharepath = sharepath
-        try:
-            conn = smb.SMB(dc_hostname, service, lp=self.lp, creds=self.creds)
-        except Exception as e:
-            raise CommandError("Error connecting to '%s' using SMB" % dc_hostname, e)
+        conn = smb_connection(dc_hostname, service, lp=self.lp,
+                              creds=self.creds)
 
         self.conn = conn
 
@@ -1409,7 +1410,7 @@ class cmd_restore(cmd_create):
             raise CommandError("Failed to restore: %s" % e)
 
 
-class cmd_del(Command):
+class cmd_del(GPOCommand):
     """Delete a GPO."""
 
     synopsis = "%prog <gpo> [options]"
@@ -1440,21 +1441,19 @@ class cmd_del(Command):
             dc_hostname = netcmd_finddc(self.lp, self.creds)
             self.url = dc_url(self.lp, self.creds, dc=dc_hostname)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         # Check if valid GPO
         try:
             msg = get_gpo_info(self.samdb, gpo=gpo)[0]
-            unc_path = msg['gPCFileSysPath'][0]
+            unc_path = str(msg['gPCFileSysPath'][0])
         except Exception:
             raise CommandError("GPO '%s' does not exist" % gpo)
 
         # Connect to DC over SMB
         [dom_name, service, sharepath] = parse_unc(unc_path)
-        try:
-            conn = smb.SMB(dc_hostname, service, lp=self.lp, creds=self.creds)
-        except Exception as e:
-            raise CommandError("Error connecting to '%s' using SMB" % dc_hostname, e)
+        conn = smb_connection(dc_hostname, service, lp=self.lp,
+                              creds=self.creds)
 
         self.samdb.transaction_start()
         try:
@@ -1485,7 +1484,7 @@ class cmd_del(Command):
         self.outf.write("GPO %s deleted.\n" % gpo)
 
 
-class cmd_aclcheck(Command):
+class cmd_aclcheck(GPOCommand):
     """Check all GPOs have matching LDAP and DS ACLs."""
 
     synopsis = "%prog [options]"
@@ -1516,25 +1515,27 @@ class cmd_aclcheck(Command):
             dc_hostname = netcmd_finddc(self.lp, self.creds)
             self.url = dc_url(self.lp, self.creds, dc=dc_hostname)
 
-        samdb_connect(self)
+        self.samdb_connect()
 
         msg = get_gpo_info(self.samdb, None)
 
         for m in msg:
             # verify UNC path
-            unc = m['gPCFileSysPath'][0]
+            unc = str(m['gPCFileSysPath'][0])
             try:
                 [dom_name, service, sharepath] = parse_unc(unc)
             except ValueError:
                 raise CommandError("Invalid GPO path (%s)" % unc)
 
             # SMB connect to DC
-            try:
-                conn = smb.SMB(dc_hostname, service, lp=self.lp, creds=self.creds)
-            except Exception:
-                raise CommandError("Error connecting to '%s' using SMB" % dc_hostname)
+            conn = smb_connection(dc_hostname, service, lp=self.lp,
+                                  creds=self.creds)
 
             fs_sd = conn.get_acl(sharepath, security.SECINFO_OWNER | security.SECINFO_GROUP | security.SECINFO_DACL, security.SEC_FLAG_MAXIMUM_ALLOWED)
+
+            if 'nTSecurityDescriptor' not in m:
+                raise CommandError("Could not read nTSecurityDescriptor. "
+                                   "This requires an Administrator account")
 
             ds_sd_ndr = m['nTSecurityDescriptor'][0]
             ds_sd = ndr_unpack(security.descriptor, ds_sd_ndr).as_sddl()

@@ -74,6 +74,7 @@ NTSTATUS smbXcli_conn_samba_suicide(struct smbXcli_conn *conn,
 
 void smbXcli_req_unset_pending(struct tevent_req *req);
 bool smbXcli_req_set_pending(struct tevent_req *req);
+struct timeval smbXcli_req_endtime(struct tevent_req *req);
 
 uint32_t smb1cli_conn_capabilities(struct smbXcli_conn *conn);
 uint32_t smb1cli_conn_max_xmit(struct smbXcli_conn *conn);
@@ -467,6 +468,15 @@ struct smbXcli_session *smbXcli_session_copy(TALLOC_CTX *mem_ctx,
 					       struct smbXcli_session *src);
 bool smbXcli_session_is_guest(struct smbXcli_session *session);
 bool smbXcli_session_is_authenticated(struct smbXcli_session *session);
+NTSTATUS smb2cli_session_signing_key(struct smbXcli_session *session,
+				     TALLOC_CTX *mem_ctx,
+				     DATA_BLOB *key);
+NTSTATUS smb2cli_session_encryption_key(struct smbXcli_session *session,
+					TALLOC_CTX *mem_ctx,
+					DATA_BLOB *key);
+NTSTATUS smb2cli_session_decryption_key(struct smbXcli_session *session,
+					TALLOC_CTX *mem_ctx,
+					DATA_BLOB *key);
 NTSTATUS smbXcli_session_application_key(struct smbXcli_session *session,
 					 TALLOC_CTX *mem_ctx,
 					 DATA_BLOB *key);
@@ -491,6 +501,8 @@ uint16_t smb2cli_session_reset_channel_sequence(struct smbXcli_session *session,
 uint16_t smb2cli_session_current_channel_sequence(struct smbXcli_session *session);
 void smb2cli_session_start_replay(struct smbXcli_session *session);
 void smb2cli_session_stop_replay(struct smbXcli_session *session);
+void smb2cli_session_require_signed_response(struct smbXcli_session *session,
+					     bool require_signed_response);
 NTSTATUS smb2cli_session_update_preauth(struct smbXcli_session *session,
 					const struct iovec *iov);
 NTSTATUS smb2cli_session_set_session_key(struct smbXcli_session *session,

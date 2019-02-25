@@ -45,7 +45,6 @@
 #include "lib/socket/socket.h"
 #include "librpc/gen_ndr/irpc.h"
 #include "libds/common/flag_mapping.h"
-#include "../lib/util/util_runcmd.h"
 #include "lib/util/access.h"
 #include "lib/util/util_str_hex.h"
 #include "libcli/util/ntstatus.h"
@@ -55,6 +54,9 @@
  * dsdb_request_add_controls()
  */
 #include "dsdb/samdb/ldb_modules/util.h"
+
+/* default is 30 minutes: -1e7 * 30 * 60 */
+#define DEFAULT_OBSERVATION_WINDOW              -18000000000
 
 /*
   search the sam for the specified attributes in a specific domain, filter on
@@ -199,26 +201,6 @@ struct dom_sid *samdb_search_dom_sid(struct ldb_context *sam_ldb,
 	talloc_free(res);
 	return sid;	
 }
-
-/*
-  return the count of the number of records in the sam matching the query
-*/
-int samdb_search_count(struct ldb_context *sam_ldb,
-		       TALLOC_CTX *mem_ctx,
-		       struct ldb_dn *basedn,
-		       const char *format, ...) _PRINTF_ATTRIBUTE(4,5)
-{
-	va_list ap;
-	const char *attrs[] = { NULL };
-	int ret;
-
-	va_start(ap, format);
-	ret = gendb_search_v(sam_ldb, mem_ctx, basedn, NULL, attrs, format, ap);
-	va_end(ap);
-
-	return ret;
-}
-
 
 /*
   search the sam for a single integer attribute in exactly 1 record
@@ -1891,13 +1873,16 @@ const char *samdb_client_site_name(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 				   bool fallback)
 {
 	const char *attrs[] = { "cn", "siteObject", NULL };
-	struct ldb_dn *sites_container_dn, *subnets_dn, *sites_dn;
-	struct ldb_result *res;
-	const struct ldb_val *val;
-	const char *site_name = NULL, *l_subnet_name = NULL;
+	struct ldb_dn *sites_container_dn = NULL;
+	struct ldb_dn *subnets_dn = NULL;
+	struct ldb_dn *sites_dn = NULL;
+	struct ldb_result *res = NULL;
+	const struct ldb_val *val = NULL;
+	const char *site_name = NULL;
+	const char *l_subnet_name = NULL;
 	const char *allow_list[2] = { NULL, NULL };
 	unsigned int i, count;
-	int cnt, ret;
+	int ret;
 
 	/*
 	 * if we don't have a client ip e.g. ncalrpc
@@ -1909,14 +1894,12 @@ const char *samdb_client_site_name(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 
 	sites_container_dn = samdb_sites_dn(ldb, mem_ctx);
 	if (sites_container_dn == NULL) {
-		return NULL;
+		goto exit;
 	}
 
 	subnets_dn = ldb_dn_copy(mem_ctx, sites_container_dn);
 	if ( ! ldb_dn_add_child_fmt(subnets_dn, "CN=Subnets")) {
-		talloc_free(sites_container_dn);
-		talloc_free(subnets_dn);
-		return NULL;
+		goto exit;
 	}
 
 	ret = ldb_search(ldb, mem_ctx, &res, subnets_dn, LDB_SCOPE_ONELEVEL,
@@ -1924,9 +1907,7 @@ const char *samdb_client_site_name(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 	if (ret == LDB_ERR_NO_SUCH_OBJECT) {
 		count = 0;
 	} else if (ret != LDB_SUCCESS) {
-		talloc_free(sites_container_dn);
-		talloc_free(subnets_dn);
-		return NULL;
+		goto exit;
 	} else {
 		count = res->count;
 	}
@@ -1951,7 +1932,7 @@ const char *samdb_client_site_name(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 			site_name = talloc_strdup(mem_ctx,
 						  (const char *) val->data);
 
-			talloc_free(sites_dn);
+			TALLOC_FREE(sites_dn);
 
 			break;
 		}
@@ -1963,8 +1944,17 @@ const char *samdb_client_site_name(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 		 * is for sure the same as our server site). If more sites do
 		 * exist then we don't know which one to use and set the site
 		 * name to "". */
-		cnt = samdb_search_count(ldb, mem_ctx, sites_container_dn,
-					 "(objectClass=site)");
+		size_t cnt = 0;
+		ret = dsdb_domain_count(
+			ldb,
+			&cnt,
+			sites_container_dn,
+			NULL,
+			LDB_SCOPE_SUBTREE,
+			"(objectClass=site)");
+		if (ret != LDB_SUCCESS) {
+			goto exit;
+		}
 		if (cnt == 1) {
 			site_name = samdb_server_site_name(ldb, mem_ctx);
 		} else {
@@ -1977,9 +1967,10 @@ const char *samdb_client_site_name(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 		*subnet_name = talloc_strdup(mem_ctx, l_subnet_name);
 	}
 
-	talloc_free(sites_container_dn);
-	talloc_free(subnets_dn);
-	talloc_free(res);
+exit:
+	TALLOC_FREE(sites_container_dn);
+	TALLOC_FREE(subnets_dn);
+	TALLOC_FREE(res);
 
 	return site_name;
 }
@@ -2081,6 +2072,9 @@ static void pwd_timeout_debug(struct tevent_context *unused1,
  */
 enum samr_ValidationStatus samdb_check_password(TALLOC_CTX *mem_ctx,
 						struct loadparm_context *lp_ctx,
+						const char *account_name,
+						const char *user_principal_name,
+						const char *full_name,
 						const DATA_BLOB *utf8_blob,
 						const uint32_t pwdProperties,
 						const uint32_t minPwdLength)
@@ -2109,7 +2103,7 @@ enum samr_ValidationStatus samdb_check_password(TALLOC_CTX *mem_ctx,
 		int error = 0;
 		struct tevent_context *event_ctx = NULL;
 		struct tevent_req *req = NULL;
-		struct samba_runcmd_state *run_cmd = NULL;
+		int cps_stdin = -1;
 		const char * const cmd[4] = {
 			"/bin/sh", "-c",
 			password_script,
@@ -2127,18 +2121,58 @@ enum samr_ValidationStatus samdb_check_password(TALLOC_CTX *mem_ctx,
 				 tevent_timeval_current_ofs(1, 0),
 				 pwd_timeout_debug, NULL);
 
-		req = samba_runcmd_send(event_ctx, event_ctx,
-					tevent_timeval_current_ofs(10, 0),
-					100, 100, cmd, NULL);
-		run_cmd = tevent_req_data(req, struct samba_runcmd_state);
-		if (write(run_cmd->fd_stdin, utf8_pw, utf8_len) != utf8_len) {
+		check_ret = setenv("SAMBA_CPS_ACCOUNT_NAME", account_name, 1);
+		if (check_ret != 0) {
+			TALLOC_FREE(password_script);
+			TALLOC_FREE(event_ctx);
+			return SAMR_VALIDATION_STATUS_PASSWORD_FILTER_ERROR;
+		}
+		if (user_principal_name != NULL) {
+			check_ret = setenv("SAMBA_CPS_USER_PRINCIPAL_NAME",
+					   user_principal_name, 1);
+		} else {
+			unsetenv("SAMBA_CPS_USER_PRINCIPAL_NAME");
+		}
+		if (check_ret != 0) {
+			TALLOC_FREE(password_script);
+			TALLOC_FREE(event_ctx);
+			return SAMR_VALIDATION_STATUS_PASSWORD_FILTER_ERROR;
+		}
+		if (full_name != NULL) {
+			check_ret = setenv("SAMBA_CPS_FULL_NAME", full_name, 1);
+		} else {
+			unsetenv("SAMBA_CPS_FULL_NAME");
+		}
+		if (check_ret != 0) {
 			TALLOC_FREE(password_script);
 			TALLOC_FREE(event_ctx);
 			return SAMR_VALIDATION_STATUS_PASSWORD_FILTER_ERROR;
 		}
 
-		close(run_cmd->fd_stdin);
-		run_cmd->fd_stdin = -1;
+		req = samba_runcmd_send(event_ctx, event_ctx,
+					tevent_timeval_current_ofs(10, 0),
+					100, 100, cmd, NULL);
+		unsetenv("SAMBA_CPS_ACCOUNT_NAME");
+		unsetenv("SAMBA_CPS_USER_PRINCIPAL_NAME");
+		unsetenv("SAMBA_CPS_FULL_NAME");
+		if (req == NULL) {
+			TALLOC_FREE(password_script);
+			TALLOC_FREE(event_ctx);
+			return SAMR_VALIDATION_STATUS_PASSWORD_FILTER_ERROR;
+		}
+
+		cps_stdin = samba_runcmd_export_stdin(req);
+
+		if (write(cps_stdin, utf8_pw, utf8_len) != utf8_len) {
+			close(cps_stdin);
+			cps_stdin = -1;
+			TALLOC_FREE(password_script);
+			TALLOC_FREE(event_ctx);
+			return SAMR_VALIDATION_STATUS_PASSWORD_FILTER_ERROR;
+		}
+
+		close(cps_stdin);
+		cps_stdin = -1;
 
 		if (!tevent_req_poll(req, event_ctx)) {
 			TALLOC_FREE(password_script);
@@ -2153,17 +2187,16 @@ enum samr_ValidationStatus samdb_check_password(TALLOC_CTX *mem_ctx,
 			DEBUG(0, ("check_password_complexity: check password script took too long!\n"));
 			TALLOC_FREE(password_script);
 			return SAMR_VALIDATION_STATUS_PASSWORD_FILTER_ERROR;
-		} else {
-			DEBUG(5,("check_password_complexity: check password script (%s) "
-				 "returned [%d]\n", password_script, check_ret));
+		}
+		DEBUG(5,("check_password_complexity: check password script (%s) "
+			 "returned [%d]\n", password_script, check_ret));
 
-			if (check_ret != 0) {
-				DEBUG(1,("check_password_complexity: "
-					 "check password script said new password is not good "
-					 "enough!\n"));
-				TALLOC_FREE(password_script);
-				return SAMR_VALIDATION_STATUS_NOT_COMPLEX_ENOUGH;
-			}
+		if (check_ret != 0) {
+			DEBUG(1,("check_password_complexity: "
+				 "check password script said new password is not good "
+				 "enough!\n"));
+			TALLOC_FREE(password_script);
+			return SAMR_VALIDATION_STATUS_NOT_COMPLEX_ENOUGH;
 		}
 
 		TALLOC_FREE(password_script);
@@ -2523,12 +2556,18 @@ NTSTATUS samdb_set_password_sid(struct ldb_context *ldb, TALLOC_CTX *mem_ctx,
 		uint32_t trust_direction;
 		uint32_t i;
 		const struct ldb_val *old_val = NULL;
-		struct trustAuthInOutBlob old_blob = {};
+		struct trustAuthInOutBlob old_blob = {
+			.count = 0,
+		};
 		uint32_t old_version = 0;
 		struct AuthenticationInformation *old_version_a = NULL;
 		uint32_t _new_version = 0;
-		struct trustAuthInOutBlob new_blob = {};
-		struct ldb_val new_val = {};
+		struct trustAuthInOutBlob new_blob = {
+			.count = 0,
+		};
+		struct ldb_val new_val = {
+			.length = 0,
+		};
 		struct timeval tv = timeval_current();
 		NTTIME now = timeval_to_nttime(&tv);
 		enum ndr_err_code ndr_err;
@@ -5369,9 +5408,9 @@ int samdb_result_effective_badPwdCount(struct ldb_context *sam_ldb,
 
 	if (res != NULL) {
 		lockOutObservationWindow =
-			ldb_msg_find_attr_as_int(res->msgs[0],
-						 "msDS-LockoutObservationWindow",
-						  0);
+			ldb_msg_find_attr_as_int64(res->msgs[0],
+						   "msDS-LockoutObservationWindow",
+						    DEFAULT_OBSERVATION_WINDOW);
 		talloc_free(res);
 	} else {
 
@@ -5408,12 +5447,13 @@ static int64_t get_lockout_observation_window(struct ldb_message *domain_msg,
 					      struct ldb_message *pso_msg)
 {
 	if (pso_msg != NULL) {
-		return ldb_msg_find_attr_as_int(pso_msg,
-						"msDS-LockoutObservationWindow",
-						 0);
+		return ldb_msg_find_attr_as_int64(pso_msg,
+						  "msDS-LockoutObservationWindow",
+						   DEFAULT_OBSERVATION_WINDOW);
 	} else {
-		return ldb_msg_find_attr_as_int(domain_msg,
-						"lockOutObservationWindow", 0);
+		return ldb_msg_find_attr_as_int64(domain_msg,
+						  "lockOutObservationWindow",
+						   DEFAULT_OBSERVATION_WINDOW);
 	}
 }
 
@@ -5753,4 +5793,182 @@ bool dsdb_objects_have_same_nc(struct ldb_context *ldb,
 	talloc_free(tmp_ctx);
 
 	return same_nc;
+}
+/*
+ * Context for dsdb_count_domain_callback
+ */
+struct dsdb_count_domain_context {
+	/*
+	 * Number of matching records
+	 */
+	size_t count;
+	/*
+	 * sid of the domain that the records must belong to.
+	 * if NULL records can belong to any domain.
+	 */
+	struct dom_sid *dom_sid;
+};
+
+/*
+ * @brief ldb aysnc callback for dsdb_domain_count.
+ *
+ * count the number of records in the database matching an LDAP query,
+ * optionally filtering for domain membership.
+ *
+ * @param [in,out] req the ldb request being processed
+ *                    req->context contains:
+ *                        count   The number of matching records
+ *                        dom_sid The domain sid, if present records must belong
+ *                                to the domain to be counted.
+ *@param [in,out] ares The query result.
+ *
+ * @return an LDB error code
+ *
+ */
+static int dsdb_count_domain_callback(
+	struct ldb_request *req,
+	struct ldb_reply *ares)
+{
+
+	if (ares == NULL) {
+		return ldb_request_done(req, LDB_ERR_OPERATIONS_ERROR);
+	}
+	if (ares->error != LDB_SUCCESS) {
+		int error = ares->error;
+		TALLOC_FREE(ares);
+		return ldb_request_done(req, error);
+	}
+
+	switch (ares->type) {
+	case LDB_REPLY_ENTRY:
+	{
+		struct dsdb_count_domain_context *context = NULL;
+		bool ok, in_domain;
+		struct dom_sid sid;
+		const struct ldb_val *v;
+
+		context = req->context;
+		if (context->dom_sid == NULL) {
+			context->count++;
+			break;
+		}
+
+		v = ldb_msg_find_ldb_val(ares->message, "objectSid");
+		if (v == NULL) {
+			break;
+		}
+
+		ok = sid_parse(v->data, v->length, &sid);
+		if (!ok) {
+			break;
+		}
+
+		in_domain = dom_sid_in_domain(context->dom_sid, &sid);
+		if (!in_domain) {
+			break;
+		}
+
+		context->count++;
+		break;
+	}
+	case LDB_REPLY_REFERRAL:
+		break;
+
+	case LDB_REPLY_DONE:
+		TALLOC_FREE(ares);
+		return ldb_request_done(req, LDB_SUCCESS);
+	}
+
+	TALLOC_FREE(ares);
+
+	return LDB_SUCCESS;
+}
+
+/*
+ * @brief Count the number of records matching a query.
+ *
+ * Count the number of entries in the database matching the supplied query,
+ * optionally filtering only those entries belonging to the supplied domain.
+ *
+ * @param ldb [in] Current ldb context
+ * @param count [out] Pointer to the count
+ * @param base [in] The base dn for the quey
+ * @param dom_sid [in] The domain sid, if non NULL records that are not a member
+ *                     of the domain are ignored.
+ * @param scope [in] Search scope.
+ * @param exp_fmt [in] format string for the query.
+ *
+ * @return LDB_STATUS code.
+ */
+int dsdb_domain_count(
+	struct ldb_context *ldb,
+	size_t *count,
+	struct ldb_dn *base,
+	struct dom_sid *dom_sid,
+	enum ldb_scope scope,
+	const char *exp_fmt, ...)
+{
+	TALLOC_CTX *tmp_ctx = NULL;
+	struct ldb_request *req = NULL;
+	struct dsdb_count_domain_context *context = NULL;
+	char *expression = NULL;
+	const char *object_sid[] = {"objectSid", NULL};
+	const char *none[] = {NULL};
+	va_list ap;
+	int ret;
+
+	*count = 0;
+	tmp_ctx = talloc_new(ldb);
+
+	context = talloc_zero(tmp_ctx, struct dsdb_count_domain_context);
+	if (context == NULL) {
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+	context->dom_sid = dom_sid;
+
+	if (exp_fmt) {
+		va_start(ap, exp_fmt);
+		expression = talloc_vasprintf(tmp_ctx, exp_fmt, ap);
+		va_end(ap);
+
+		if (expression == NULL) {
+			TALLOC_FREE(context);
+			TALLOC_FREE(tmp_ctx);
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+	}
+
+	ret = ldb_build_search_req(
+		&req,
+		ldb,
+		tmp_ctx,
+		base,
+		scope,
+		expression,
+		(dom_sid == NULL) ? none : object_sid,
+		NULL,
+		context,
+		dsdb_count_domain_callback,
+		NULL);
+	ldb_req_set_location(req, "dsdb_domain_count");
+
+	if (ret != LDB_SUCCESS) goto done;
+
+	ret = ldb_request(ldb, req);
+
+	if (ret == LDB_SUCCESS) {
+		ret = ldb_wait(req->handle, LDB_WAIT_ALL);
+		if (ret == LDB_SUCCESS) {
+			*count = context->count;
+		}
+	}
+
+
+done:
+	TALLOC_FREE(expression);
+	TALLOC_FREE(req);
+	TALLOC_FREE(context);
+	TALLOC_FREE(tmp_ctx);
+
+	return ret;
 }

@@ -1296,6 +1296,7 @@ static void call_trans2open(connection_struct *conn,
 				fname,
 				ucf_flags,
 				NULL,
+				NULL,
 				&smb_fname);
 	if (!NT_STATUS_IS_OK(status)) {
 		if (NT_STATUS_EQUAL(status,NT_STATUS_PATH_NOT_COVERED)) {
@@ -1530,24 +1531,7 @@ static NTSTATUS unix_perms_from_wire( connection_struct *conn,
 		}
 	}
 
-	ret |= ((perms & UNIX_X_OTH ) ? S_IXOTH : 0);
-	ret |= ((perms & UNIX_W_OTH ) ? S_IWOTH : 0);
-	ret |= ((perms & UNIX_R_OTH ) ? S_IROTH : 0);
-	ret |= ((perms & UNIX_X_GRP ) ? S_IXGRP : 0);
-	ret |= ((perms & UNIX_W_GRP ) ? S_IWGRP : 0);
-	ret |= ((perms & UNIX_R_GRP ) ? S_IRGRP : 0);
-	ret |= ((perms & UNIX_X_USR ) ? S_IXUSR : 0);
-	ret |= ((perms & UNIX_W_USR ) ? S_IWUSR : 0);
-	ret |= ((perms & UNIX_R_USR ) ? S_IRUSR : 0);
-#ifdef S_ISVTX
-	ret |= ((perms & UNIX_STICKY ) ? S_ISVTX : 0);
-#endif
-#ifdef S_ISGID
-	ret |= ((perms & UNIX_SET_GID ) ? S_ISGID : 0);
-#endif
-#ifdef S_ISUID
-	ret |= ((perms & UNIX_SET_UID ) ? S_ISUID : 0);
-#endif
+	ret = wire_perms_to_unix(perms);
 
 	if (ptype == PERM_NEW_FILE) {
 		/*
@@ -2760,6 +2744,7 @@ close_if_end = %d requires_resume_key = %d backup_priv = %d level = 0x%x, max_da
 		ntstatus = filename_convert(talloc_tos(), conn,
 				    directory,
 				    ucf_flags,
+				    NULL,
 				    &mask_contains_wcard,
 				    &smb_dname);
 	}
@@ -5800,8 +5785,13 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 				return;
 			}
 
-			fileid = vfs_file_id_from_sbuf(conn, &smb_fname->st);
-			get_file_infos(fileid, fsp->name_hash, &delete_pending, &write_time_ts);
+			if (lp_smbd_getinfo_ask_sharemode(SNUM(conn))) {
+				fileid = vfs_file_id_from_sbuf(
+					conn, &smb_fname->st);
+				get_file_infos(fileid, fsp->name_hash,
+					       &delete_pending,
+					       &write_time_ts);
+			}
 		} else {
 			/*
 			 * Original code - this is an open file.
@@ -5813,8 +5803,13 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 					map_nt_error_from_unix(errno));
 				return;
 			}
-			fileid = vfs_file_id_from_sbuf(conn, &smb_fname->st);
-			get_file_infos(fileid, fsp->name_hash, &delete_pending, &write_time_ts);
+			if (lp_smbd_getinfo_ask_sharemode(SNUM(conn))) {
+				fileid = vfs_file_id_from_sbuf(
+					conn, &smb_fname->st);
+				get_file_infos(fileid, fsp->name_hash,
+					       &delete_pending,
+					       &write_time_ts);
+			}
 		}
 
 	} else {
@@ -5873,6 +5868,7 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 					conn,
 					fname,
 					ucf_flags,
+					NULL,
 					NULL,
 					&smb_fname);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -5981,8 +5977,12 @@ static void call_trans2qfilepathinfo(connection_struct *conn,
 			return;
 		}
 
-		fileid = vfs_file_id_from_sbuf(conn, &smb_fname->st);
-		get_file_infos(fileid, name_hash, &delete_pending, &write_time_ts);
+		if (lp_smbd_getinfo_ask_sharemode(SNUM(conn))) {
+			fileid = vfs_file_id_from_sbuf(conn, &smb_fname->st);
+			get_file_infos(fileid, name_hash, &delete_pending,
+				       &write_time_ts);
+		}
+
 		if (delete_pending) {
 			reply_nterror(req, NT_STATUS_DELETE_PENDING);
 			return;
@@ -6712,6 +6712,7 @@ static NTSTATUS smb_set_file_unix_hlink(connection_struct *conn,
 				oldname,
 				ucf_flags,
 				NULL,
+				NULL,
 				&smb_fname_old);
 	if (!NT_STATUS_IS_OK(status)) {
 		return status;
@@ -6786,6 +6787,7 @@ static NTSTATUS smb2_file_rename_information(connection_struct *conn,
 				conn,
 				newname,
 				ucf_flags,
+				NULL,
 				NULL,
 				&smb_fname_dst);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -6896,6 +6898,7 @@ static NTSTATUS smb_file_link_information(connection_struct *conn,
 				conn,
 				newname,
 				ucf_flags,
+				NULL,
 				NULL,
 				&smb_fname_dst);
 	if (!NT_STATUS_IS_OK(status)) {
@@ -8837,6 +8840,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		if (info_level == SMB_SET_FILE_UNIX_BASIC ||
 				info_level == SMB_SET_FILE_UNIX_INFO2 ||
 				info_level == SMB_FILE_RENAME_INFORMATION ||
+				info_level == SMB_POSIX_PATH_OPEN ||
 				info_level == SMB_POSIX_PATH_UNLINK) {
 			ucf_flags |= UCF_UNIX_NAME_LOOKUP;
 		}
@@ -8844,6 +8848,7 @@ static void call_trans2setfilepathinfo(connection_struct *conn,
 		status = filename_convert(req, conn,
 					 fname,
 					 ucf_flags,
+					 NULL,
 					 NULL,
 					 &smb_fname);
 		if (!NT_STATUS_IS_OK(status)) {
@@ -8993,6 +8998,7 @@ static void call_trans2mkdir(connection_struct *conn, struct smb_request *req,
 				conn,
 				directory,
 				ucf_flags,
+				NULL,
 				NULL,
 				&smb_dname);
 

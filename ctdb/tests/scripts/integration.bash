@@ -29,8 +29,11 @@ ctdb_test_exit ()
 
     trap - 0
 
-    [ $(($testfailures+0)) -eq 0 -a $status -ne 0 ] && testfailures=$status
-    status=$(($testfailures+0))
+    # run_tests.sh pipes stdout into tee.  If the tee process is
+    # killed then any attempt to write to stdout (e.g. echo) will
+    # result in SIGPIPE, terminating the caller.  Ignore SIGPIPE to
+    # ensure that all clean-up is run.
+    trap '' PIPE
 
     # Avoid making a test fail from this point onwards.  The test is
     # now complete.
@@ -41,22 +44,8 @@ ctdb_test_exit ()
     eval "$ctdb_test_exit_hook" || true
     unset ctdb_test_exit_hook
 
-    if $ctdb_test_restart_scheduled || ! cluster_is_healthy ; then
-	echo "Restarting CTDB (scheduled)..."
-	ctdb_stop_all || true  # Might be restarting some daemons were shutdown
-
-	echo "Reconfiguring cluster..."
-	setup_ctdb
-
-	ctdb_init
-    else
-	# This could be made unconditional but then we might get
-	# duplication from the recovery in ctdb_init().  We want to
-	# leave the recovery in ctdb_init() so that future tests that
-	# might do a manual restart mid-test will benefit.
-	echo "Forcing a recovery..."
-	onnode 0 $CTDB recover
-    fi
+    echo "Stopping cluster..."
+    ctdb_stop_all
 
     exit $status
 }
@@ -68,11 +57,17 @@ ctdb_test_exit_hook_add ()
 
 ctdb_test_init ()
 {
-    scriptname=$(basename "$0")
-    testfailures=0
-    ctdb_test_restart_scheduled=false
+	trap "ctdb_test_exit" 0
 
-    trap "ctdb_test_exit" 0
+	ctdb_stop_all >/dev/null 2>&1 || true
+
+	echo "Configuring cluster..."
+	setup_ctdb "$@" || exit 1
+
+	echo "Starting cluster..."
+	ctdb_init || exit 1
+
+	echo  "*** SETUP COMPLETE AT $(date '+%F %T'), RUNNING TEST..."
 }
 
 ########################################
@@ -291,24 +286,25 @@ _cluster_is_ready ()
 
 cluster_is_healthy ()
 {
-    if onnode 0 $CTDB_TEST_WRAPPER _cluster_is_healthy ; then
-	echo "Cluster is HEALTHY"
-	if ! onnode 0 $CTDB_TEST_WRAPPER _cluster_is_recovered ; then
-	  echo "WARNING: cluster in recovery mode!"
+	if onnode 0 $CTDB_TEST_WRAPPER _cluster_is_healthy ; then
+		echo "Cluster is HEALTHY"
+		if ! onnode 0 $CTDB_TEST_WRAPPER _cluster_is_recovered ; then
+			echo "WARNING: cluster in recovery mode!"
+		fi
+		return 0
 	fi
-	return 0
-    else
+
 	echo "Cluster is UNHEALTHY"
-	if ! ${ctdb_test_restart_scheduled:-false} ; then
-	    echo "DEBUG AT $(date '+%F %T'):"
-	    local i
-	    for i in "onnode -q 0 $CTDB status" "onnode -q 0 onnode all $CTDB scriptstatus" ; do
+
+	echo "DEBUG AT $(date '+%F %T'):"
+	local i
+	for i in "onnode -q 0 $CTDB status" \
+			 "onnode -q 0 onnode all $CTDB scriptstatus" ; do
 		echo "$i"
 		$i || true
-	    done
-	fi
+	done
+
 	return 1
-    fi
 }
 
 wait_until_ready ()
@@ -480,6 +476,13 @@ wait_until_node_has_some_ips ()
     wait_until 60 node_has_some_ips "$@"
 }
 
+wait_until_node_has_no_ips ()
+{
+    echo "Waiting until no IPs are assigned to node ${test_node}"
+
+    wait_until 60 ! node_has_some_ips "$@"
+}
+
 #######################################
 
 _service_ctdb ()
@@ -503,10 +506,9 @@ ctdb_start_all ()
 	onnode -p all $CTDB_TEST_WRAPPER _service_ctdb start
 }
 
-# Nothing needed for a cluster.  Override for local daemons.
 setup_ctdb ()
 {
-    :
+	ctdb_enable_cluster_test_event_scripts
 }
 
 start_ctdb_1 ()
@@ -578,11 +580,6 @@ ctdb_init ()
     # Try to make the calling test fail
     status=1
     return 1
-}
-
-ctdb_restart_when_done ()
-{
-    ctdb_test_restart_scheduled=true
 }
 
 ctdb_base_show ()

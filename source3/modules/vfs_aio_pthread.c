@@ -50,7 +50,8 @@ struct aio_open_private_data {
 	bool in_progress;
 	const char *fname;
 	char *dname;
-	struct smbd_server_connection *sconn;
+	connection_struct *conn;
+	const struct security_unix_token *ux_tok;
 	uint64_t initial_allocation_size;
 	/* Returns. */
 	int ret_fd;
@@ -59,6 +60,8 @@ struct aio_open_private_data {
 
 /* List of outstanding requests we have. */
 static struct aio_open_private_data *open_pd_list;
+
+static void aio_open_do(struct aio_open_private_data *opd);
 
 /************************************************************************
  Find the open private data by mid.
@@ -92,9 +95,28 @@ static void aio_open_handle_completion(struct tevent_req *subreq)
 	ret = pthreadpool_tevent_job_recv(subreq);
 	TALLOC_FREE(subreq);
 	if (ret != 0) {
-		smb_panic("aio_open_handle_completion");
-		/* notreached. */
-		return;
+		bool ok;
+
+		if (ret != EAGAIN) {
+			smb_panic("aio_open_handle_completion");
+			/* notreached. */
+			return;
+		}
+		/*
+		 * Make sure we run as the user again
+		 */
+		ok = change_to_user(opd->conn, opd->conn->vuid);
+		if (!ok) {
+			smb_panic("Can't change to user");
+			return;
+		}
+		/*
+		 * If we get EAGAIN from pthreadpool_tevent_job_recv() this
+		 * means the lower level pthreadpool failed to create a new
+		 * thread. Fallback to sync processing in that case to allow
+		 * some progress for the client.
+		 */
+		aio_open_do(opd);
 	}
 
 	DEBUG(10,("aio_open_handle_completion: mid %llu "
@@ -110,7 +132,7 @@ static void aio_open_handle_completion(struct tevent_req *subreq)
 	 * to find the correct connection for a fsp.
 	 * For now we only have one connection, so this is correct...
 	 */
-	xconn = opd->sconn->client->connections;
+	xconn = opd->conn->sconn->client->connections;
 
 	/* Find outstanding event and reschedule. */
 	if (!schedule_deferred_open_message_smb(xconn, opd->mid)) {
@@ -139,6 +161,21 @@ static void aio_open_worker(void *private_data)
 	struct aio_open_private_data *opd =
 		(struct aio_open_private_data *)private_data;
 
+	/* Become the correct credential on this thread. */
+	if (set_thread_credentials(opd->ux_tok->uid,
+				opd->ux_tok->gid,
+				(size_t)opd->ux_tok->ngroups,
+				opd->ux_tok->groups) != 0) {
+		opd->ret_fd = -1;
+		opd->ret_errno = errno;
+		return;
+	}
+
+	aio_open_do(opd);
+}
+
+static void aio_open_do(struct aio_open_private_data *opd)
+{
 	opd->ret_fd = openat(opd->dir_fd,
 			opd->fname,
 			opd->flags,
@@ -198,15 +235,24 @@ static struct aio_open_private_data *create_private_open_data(const files_struct
 		return NULL;
 	}
 
-	opd->dir_fd = -1;
-	opd->ret_fd = -1;
-	opd->ret_errno = EINPROGRESS;
-	opd->flags = flags;
-	opd->mode = mode;
-	opd->mid = fsp->mid;
-	opd->in_progress = true;
-	opd->sconn = fsp->conn->sconn;
-	opd->initial_allocation_size = fsp->initial_allocation_size;
+	*opd = (struct aio_open_private_data) {
+		.dir_fd = -1,
+		.ret_fd = -1,
+		.ret_errno = EINPROGRESS,
+		.flags = flags,
+		.mode = mode,
+		.mid = fsp->mid,
+		.in_progress = true,
+		.conn = fsp->conn,
+		.initial_allocation_size = fsp->initial_allocation_size,
+	};
+
+	/* Copy our current credentials. */
+	opd->ux_tok = copy_unix_token(opd, get_current_utok(fsp->conn));
+	if (opd->ux_tok == NULL) {
+		TALLOC_FREE(opd);
+		return NULL;
+	}
 
 	/*
 	 * Copy the parent directory name and the
@@ -250,10 +296,6 @@ static int open_async(const files_struct *fsp,
 {
 	struct aio_open_private_data *opd = NULL;
 	struct tevent_req *subreq = NULL;
-	const struct smb_vfs_ev_glue *evg = NULL;
-	struct tevent_context *ev = NULL;
-	struct pthreadpool_tevent *tp = NULL;
-	uid_t uid = -1;
 
 	opd = create_private_open_data(fsp, flags, mode);
 	if (opd == NULL) {
@@ -261,20 +303,10 @@ static int open_async(const files_struct *fsp,
 		return -1;
 	}
 
-	evg = fsp->conn->user_vfs_evg;
-
-	uid = get_current_uid(fsp->conn);
-	if (uid == 0) {
-		/*
-		 * If we're already running as root,
-		 * so the root glue.
-		 */
-		evg = smb_vfs_ev_glue_get_root_glue(evg);
-	}
-	ev = smb_vfs_ev_glue_ev_ctx(fsp->conn->user_vfs_evg);
-	tp = smb_vfs_ev_glue_tp_path_safe(fsp->conn->user_vfs_evg);
-
-	subreq = pthreadpool_tevent_job_send(opd, ev, tp, aio_open_worker, opd);
+	subreq = pthreadpool_tevent_job_send(opd,
+					     fsp->conn->sconn->ev_ctx,
+					     fsp->conn->sconn->pool,
+					     aio_open_worker, opd);
 	if (subreq == NULL) {
 		return -1;
 	}

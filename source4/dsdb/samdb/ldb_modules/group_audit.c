@@ -25,6 +25,7 @@
 #include "includes.h"
 #include "ldb_module.h"
 #include "lib/audit_logging/audit_logging.h"
+#include "librpc/gen_ndr/windows_event_ids.h"
 
 #include "dsdb/samdb/samdb.h"
 #include "dsdb/samdb/ldb_modules/util.h"
@@ -36,10 +37,11 @@
 #define AUDIT_JSON_TYPE "groupChange"
 #define AUDIT_HR_TAG "Group Change"
 #define AUDIT_MAJOR 1
-#define AUDIT_MINOR 0
+#define AUDIT_MINOR 1
 #define GROUP_LOG_LVL 5
 
-static const char * const member_attr[] = {"member", NULL};
+static const char *const group_attrs[] = {"member", "groupType", NULL};
+static const char *const group_type_attr[] = {"groupType", NULL};
 static const char * const primary_group_attr[] = {
 	"primaryGroupID",
 	"objectSID",
@@ -105,13 +107,13 @@ static struct GUID *get_transaction_id(
  * @return A json object containing the details.
  * 	   NULL if an error was detected
  */
-static struct json_object audit_group_json(
-	const struct ldb_module *module,
-	const struct ldb_request *request,
-	const char *action,
-	const char *user,
-	const char *group,
-	const int status)
+static struct json_object audit_group_json(const struct ldb_module *module,
+					   const struct ldb_request *request,
+					   const char *action,
+					   const char *user,
+					   const char *group,
+					   const enum event_id_type event_id,
+					   const int status)
 {
 	struct ldb_context *ldb = NULL;
 	const struct dom_sid *sid = NULL;
@@ -136,6 +138,12 @@ static struct json_object audit_group_json(
 	rc = json_add_version(&audit, AUDIT_MAJOR, AUDIT_MINOR);
 	if (rc != 0) {
 		goto failure;
+	}
+	if (event_id != EVT_ID_NONE) {
+		rc = json_add_int(&audit, "eventId", event_id);
+		if (rc != 0) {
+			goto failure;
+		}
 	}
 	rc = json_add_int(&audit, "statusCode", status);
 	if (rc != 0) {
@@ -311,35 +319,36 @@ enum dn_compare_result {
 	GREATER_THAN
 };
 /*
- * @brief compare parsed_dns
+ * @brief compare parsed_dn, using GUID ordering
  *
- * Compare two parsed_dn structures, parsing the entries if necessary.
+ * Compare two parsed_dn structures, using GUID ordering.
  * To avoid the overhead of parsing the DN's this function does a binary
- * compare first. Only parsing the DN's they are not equal at a binary level.
+ * compare first. The DN's tre only parsed if they are not equal at a binary
+ * level.
  *
  * @param ctx talloc context that will own the parsed dsdb_dn
  * @param ldb ldb_context
- * @param old_val The old value
- * @param new_val The old value
+ * @param dn1 The first dn
+ * @param dn2 The second dn
  *
  * @return BINARY_EQUAL values are equal at a binary level
  *         EQUAL        DN's are equal but the meta data is different
- *         LESS_THAN    old value < new value
- *         GREATER_THAN old value > new value
+ *         LESS_THAN    dn1's GUID is less than dn2's GUID
+ *         GREATER_THAN dn1's GUID is greater than  dn2's GUID
  *
  */
 static enum dn_compare_result dn_compare(
 	TALLOC_CTX *mem_ctx,
 	struct ldb_context *ldb,
-	struct parsed_dn *old_val,
-	struct parsed_dn *new_val) {
+	struct parsed_dn *dn1,
+	struct parsed_dn *dn2) {
 
 	int res = 0;
 
 	/*
 	 * Do a binary compare first to avoid unnecessary parsing
 	 */
-	if (data_blob_cmp(new_val->v, old_val->v) == 0) {
+	if (data_blob_cmp(dn1->v, dn2->v) == 0) {
 		/*
 		 * Values are equal at a binary level so no need
 		 * for further processing
@@ -351,22 +360,22 @@ static enum dn_compare_result dn_compare(
 	 * do a GUID ordering compare. To do this we will need to ensure
 	 * that the dn's have been parsed.
 	 */
-	if (old_val->dsdb_dn == NULL) {
+	if (dn1->dsdb_dn == NULL) {
 		really_parse_trusted_dn(
 			mem_ctx,
 			ldb,
-			old_val,
+			dn1,
 			LDB_SYNTAX_DN);
 	}
-	if (new_val->dsdb_dn == NULL) {
+	if (dn2->dsdb_dn == NULL) {
 		really_parse_trusted_dn(
 			mem_ctx,
 			ldb,
-			new_val,
+			dn2,
 			LDB_SYNTAX_DN);
 	}
 
-	res = ndr_guid_compare(&new_val->guid, &old_val->guid);
+	res = ndr_guid_compare(&dn1->guid, &dn2->guid);
 	if (res < 0) {
 		return LESS_THAN;
 	} else if (res == 0) {
@@ -448,9 +457,11 @@ static const char *get_primary_group_dn(
  * @brief Log details of a change to a users primary group.
  *
  * Log details of a change to a users primary group.
+ * There is no windows event id associated with a Primary Group change.
+ * However for a new user we generate an added to group event.
  *
  * @param module The ldb module.
- * @param request The request deing logged.
+ * @param request The request being logged.
  * @param action Description of the action being performed.
  * @param group The linearized for of the group DN
  * @param status the LDB status code for the processing of the request.
@@ -496,14 +507,8 @@ static void log_primary_group_change(
 
 		struct json_object json;
 		json = audit_group_json(
-			module,
-			request,
-			action,
-			user,
-			group,
-			status);
+		    module, request, action, user, group, EVT_ID_NONE, status);
 		audit_log_json(
-			AUDIT_JSON_TYPE,
 			&json,
 			DBGC_DSDB_GROUP_AUDIT_JSON,
 			GROUP_LOG_LVL);
@@ -515,6 +520,13 @@ static void log_primary_group_change(
 				&json);
 		}
 		json_free(&json);
+		if (request->operation == LDB_ADD) {
+			/*
+			 * Have just added a user, generate a groupChange
+			 * message indicating the user has been added to thier
+			 * new PrimaryGroup.
+			 */
+		}
 	}
 	TALLOC_FREE(ctx);
 }
@@ -532,12 +544,12 @@ static void log_primary_group_change(
  * @param status the LDB status code for the processing of the request.
  *
  */
-static void log_membership_change(
-	struct ldb_module *module,
-	const struct ldb_request *request,
-	const char *action,
-	const char *user,
-	const int  status)
+static void log_membership_change(struct ldb_module *module,
+				  const struct ldb_request *request,
+				  const char *action,
+				  const char *user,
+				  const enum event_id_type event_id,
+				  const int status)
 {
 	const char *group = NULL;
 	struct audit_context *ac =
@@ -569,14 +581,8 @@ static void log_membership_change(
 		(ac->msg_ctx && ac->send_events)) {
 		struct json_object json;
 		json = audit_group_json(
-			module,
-			request,
-			action,
-			user,
-			group,
-			status);
+		    module, request, action, user, group, event_id, status);
 		audit_log_json(
-			AUDIT_JSON_TYPE,
 			&json,
 			DBGC_DSDB_GROUP_AUDIT_JSON,
 			GROUP_LOG_LVL);
@@ -593,6 +599,68 @@ static void log_membership_change(
 }
 
 /*
+ * @brief Get the windows event type id for removing a user from a group type.
+ *
+ * @param group_type the type of the current group, see libds/common/flags.h
+ *
+ * @return the Windows Event Id
+ *
+ */
+static enum event_id_type get_remove_member_event(uint32_t group_type)
+{
+
+	switch (group_type) {
+	case GTYPE_SECURITY_BUILTIN_LOCAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_LOCAL_SEC_GROUP;
+	case GTYPE_SECURITY_GLOBAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_GLOBAL_SEC_GROUP;
+	case GTYPE_SECURITY_DOMAIN_LOCAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_LOCAL_SEC_GROUP;
+	case GTYPE_SECURITY_UNIVERSAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_UNIVERSAL_SEC_GROUP;
+	case GTYPE_DISTRIBUTION_GLOBAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_GLOBAL_GROUP;
+	case GTYPE_DISTRIBUTION_DOMAIN_LOCAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_LOCAL_GROUP;
+	case GTYPE_DISTRIBUTION_UNIVERSAL_GROUP:
+		return EVT_ID_USER_REMOVED_FROM_UNIVERSAL_GROUP;
+	default:
+		return EVT_ID_NONE;
+	}
+}
+
+/*
+ * @brief Get the windows event type id for adding a user to a group type.
+ *
+ * @param group_type the type of the current group, see libds/common/flags.h
+ *
+ * @return the Windows Event Id
+ *
+ */
+static enum event_id_type get_add_member_event(uint32_t group_type)
+{
+
+	switch (group_type) {
+	case GTYPE_SECURITY_BUILTIN_LOCAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_LOCAL_SEC_GROUP;
+	case GTYPE_SECURITY_GLOBAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_GLOBAL_SEC_GROUP;
+	case GTYPE_SECURITY_DOMAIN_LOCAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_LOCAL_SEC_GROUP;
+	case GTYPE_SECURITY_UNIVERSAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_UNIVERSAL_SEC_GROUP;
+	case GTYPE_DISTRIBUTION_GLOBAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_GLOBAL_GROUP;
+	case GTYPE_DISTRIBUTION_DOMAIN_LOCAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_LOCAL_GROUP;
+	case GTYPE_DISTRIBUTION_UNIVERSAL_GROUP:
+		return EVT_ID_USER_ADDED_TO_UNIVERSAL_GROUP;
+	default:
+		return EVT_ID_NONE;
+	}
+}
+
+/*
  * @brief Log all the changes to a users group membership.
  *
  * Log details of a change to a users group memberships, except for changes
@@ -605,12 +673,12 @@ static void log_membership_change(
  * @param status the LDB status code for the processing of the request.
  *
  */
-static void log_membership_changes(
-	struct ldb_module *module,
-	const struct ldb_request *request,
-	struct ldb_message_element *el,
-	struct ldb_message_element *old_el,
-	int status)
+static void log_membership_changes(struct ldb_module *module,
+				   const struct ldb_request *request,
+				   struct ldb_message_element *el,
+				   struct ldb_message_element *old_el,
+				   uint32_t group_type,
+				   int status)
 {
 	unsigned int i, old_i, new_i;
 	unsigned int old_num_values;
@@ -675,6 +743,7 @@ static void log_membership_changes(
 			 * the new record. So it's been deleted
 			 */
 			const char *user = NULL;
+			enum event_id_type event_id;
 			if (old_val->dsdb_dn == NULL) {
 				really_parse_trusted_dn(
 					ctx,
@@ -683,12 +752,9 @@ static void log_membership_changes(
 					LDB_SYNTAX_DN);
 			}
 			user = ldb_dn_get_linearized(old_val->dsdb_dn->dn);
+			event_id = get_remove_member_event(group_type);
 			log_membership_change(
-				module,
-				request,
-				"Removed",
-				user,
-				status);
+			    module, request, "Removed", user, event_id, status);
 			old_i++;
 		} else if (cmp == BINARY_EQUAL) {
 			/*
@@ -740,27 +806,31 @@ static void log_membership_changes(
 				 * DN has been deleted.
 				 */
 				const char *user = NULL;
+				enum event_id_type event_id;
 				user = ldb_dn_get_linearized(
 					old_val->dsdb_dn->dn);
-				log_membership_change(
-					module,
-					request,
-					"Removed",
-					user,
-					status);
+				event_id = get_remove_member_event(group_type);
+				log_membership_change(module,
+						      request,
+						      "Removed",
+						      user,
+						      event_id,
+						      status);
 			} else {
 				/*
 				 * DN has been re-added
 				 */
 				const char *user = NULL;
+				enum event_id_type event_id;
 				user = ldb_dn_get_linearized(
 					new_val->dsdb_dn->dn);
-				log_membership_change(
-					module,
-					request,
-					"Added",
-					user,
-					status);
+				event_id = get_add_member_event(group_type);
+				log_membership_change(module,
+						      request,
+						      "Added",
+						      user,
+						      event_id,
+						      status);
 			}
 			old_i++;
 			new_i++;
@@ -770,6 +840,7 @@ static void log_membership_changes(
 			 * original, so it must have been added.
 			 */
 			const char *user = NULL;
+			enum event_id_type event_id;
 			if ( new_val->dsdb_dn == NULL) {
 				really_parse_trusted_dn(
 					ctx,
@@ -778,12 +849,9 @@ static void log_membership_changes(
 					LDB_SYNTAX_DN);
 			}
 			user = ldb_dn_get_linearized(new_val->dsdb_dn->dn);
+			event_id = get_add_member_event(group_type);
 			log_membership_change(
-				module,
-				request,
-				"Added",
-				user,
-				status);
+			    module, request, "Added", user, event_id, status);
 			new_i++;
 		}
 	}
@@ -791,6 +859,46 @@ static void log_membership_changes(
 	TALLOC_FREE(ctx);
 }
 
+/*
+ * @brief log a group change message for a newly added user.
+ *
+ * When a user is added we need to generate a GroupChange Add message to
+ * log that the user has been added to their PrimaryGroup
+ */
+static void log_new_user_added_to_primary_group(
+    TALLOC_CTX *ctx,
+    struct audit_callback_context *acc,
+    const char *group,
+    const int status)
+{
+	uint32_t group_type;
+	enum event_id_type event_id = EVT_ID_NONE;
+	struct ldb_result *res = NULL;
+	struct ldb_dn *group_dn = NULL;
+	struct ldb_context *ldb = NULL;
+	int ret;
+
+	ldb = ldb_module_get_ctx(acc->module);
+	group_dn = ldb_dn_new(ctx, ldb, group);
+	ret = dsdb_module_search_dn(acc->module,
+				    ctx,
+				    &res,
+				    group_dn,
+				    group_type_attr,
+				    DSDB_FLAG_NEXT_MODULE |
+					DSDB_SEARCH_REVEAL_INTERNALS |
+					DSDB_SEARCH_SHOW_DN_IN_STORAGE_FORMAT,
+				    NULL);
+	if (ret == LDB_SUCCESS) {
+		const char *user = NULL;
+		group_type =
+		    ldb_msg_find_attr_as_uint(res->msgs[0], "groupType", 0);
+		event_id = get_add_member_event(group_type);
+		user = dsdb_audit_get_primary_dn(acc->request);
+		log_membership_change(
+		    acc->module, acc->request, "Added", user, event_id, status);
+	}
+}
 
 /*
  * @brief Log the details of a primary group change.
@@ -812,6 +920,7 @@ static void log_user_primary_group_change(
 	struct dom_sid *account_sid = NULL;
 	int ret;
 	const struct ldb_message *msg = dsdb_audit_get_message(acc->request);
+
 	if (status == LDB_SUCCESS && msg != NULL) {
 		struct ldb_result *res = NULL;
 		ret = dsdb_module_search_dn(
@@ -854,6 +963,16 @@ static void log_user_primary_group_change(
 			"PrimaryGroup",
 			group,
 			status);
+		/*
+		 * Are we adding a new user with the primaryGroupID
+		 * set. If so and we're generating JSON audit logs, will need to
+		 * generate an "Add" message with the appropriate windows
+		 * event id.
+		 */
+		if (acc->request->operation == LDB_ADD) {
+			log_new_user_added_to_primary_group(
+			    ctx, acc, group, status);
+		}
 	}
 	TALLOC_FREE(ctx);
 }
@@ -867,7 +986,6 @@ static void log_user_primary_group_change(
  * @param acc details of the group memberships before the operation.
  * @param status The status code returned by the operation.
  *
- * @return an LDB status code.
  */
 static void log_group_membership_changes(
 	struct audit_callback_context *acc,
@@ -876,6 +994,7 @@ static void log_group_membership_changes(
 	TALLOC_CTX *ctx = talloc_new(NULL);
 	struct ldb_message_element *new_val = NULL;
 	int ret;
+	uint32_t group_type = 0;
 	const struct ldb_message *msg = dsdb_audit_get_message(acc->request);
 	if (status == LDB_SUCCESS && msg != NULL) {
 		struct ldb_result *res = NULL;
@@ -884,21 +1003,42 @@ static void log_group_membership_changes(
 			ctx,
 			&res,
 			msg->dn,
-			member_attr,
+			group_attrs,
 			DSDB_FLAG_NEXT_MODULE |
 			DSDB_SEARCH_REVEAL_INTERNALS |
 			DSDB_SEARCH_SHOW_DN_IN_STORAGE_FORMAT,
 			NULL);
 		if (ret == LDB_SUCCESS) {
 			new_val = ldb_msg_find_element(res->msgs[0], "member");
+			group_type = ldb_msg_find_attr_as_uint(
+			    res->msgs[0], "groupType", 0);
+			log_membership_changes(acc->module,
+					       acc->request,
+					       new_val,
+					       acc->members,
+					       group_type,
+					       status);
+			TALLOC_FREE(ctx);
+			return;
 		}
 	}
-	log_membership_changes(
-		acc->module,
-		acc->request,
-		new_val,
-		acc->members,
-		status);
+	/*
+	 * If we get here either
+	 *   one of the lower level modules failed and the group record did
+	 *   not get updated
+	 * or
+	 *   the updated group record could not be read.
+	 *
+	 * In both cases it does not make sense to log individual membership
+	 * changes so we log a group membership change "Failure" message.
+	 *
+	 */
+	log_membership_change(acc->module,
+	                      acc->request,
+			      "Failure",
+			      "",
+			      EVT_ID_NONE,
+			      status);
 	TALLOC_FREE(ctx);
 }
 
@@ -1301,7 +1441,7 @@ static int set_group_modify_callback(
 		context,
 		&res,
 		req->op.add.message->dn,
-		member_attr,
+		group_attrs,
 		DSDB_FLAG_NEXT_MODULE |
 		DSDB_SEARCH_REVEAL_INTERNALS |
 		DSDB_SEARCH_SHOW_DN_IN_STORAGE_FORMAT,

@@ -43,6 +43,7 @@ struct ctdb_buffer {
 	uint8_t *data;
 	uint32_t length;
 	uint32_t size;
+	uint32_t offset;
 };
 
 struct ctdb_queue_pkt {
@@ -64,6 +65,7 @@ struct ctdb_queue {
 	size_t alignment;
 	void *private_data;
 	ctdb_queue_cb_fn_t callback;
+	TALLOC_CTX *data_pool;
 	const char *name;
 	uint32_t buffer_size;
 };
@@ -95,14 +97,14 @@ static void queue_process_event(struct tevent_context *ev, struct tevent_immedia
 static void queue_process(struct ctdb_queue *queue)
 {
 	uint32_t pkt_size;
-	uint8_t *data;
+	uint8_t *data = NULL;
 
 	if (queue->buffer.length < sizeof(pkt_size)) {
 		return;
 	}
 
 	/* Did we at least read the size into the buffer */
-	pkt_size = *(uint32_t *)queue->buffer.data;
+	pkt_size = *(uint32_t *)(queue->buffer.data + queue->buffer.offset);
 	if (pkt_size == 0) {
 		DEBUG(DEBUG_CRIT, ("Invalid packet of length 0\n"));
 		goto failed;
@@ -114,19 +116,25 @@ static void queue_process(struct ctdb_queue *queue)
 	}
 
 	/* Extract complete packet */
-	data = talloc_memdup(queue, queue->buffer.data, pkt_size);
+	data = talloc_memdup(queue->data_pool,
+			     queue->buffer.data + queue->buffer.offset,
+			     pkt_size);
+
 	if (data == NULL) {
 		D_ERR("read error alloc failed for %u\n", pkt_size);
 		return;
 	}
 
-	/* Shift packet out from buffer */
-	if (queue->buffer.length > pkt_size) {
-		memmove(queue->buffer.data,
-			queue->buffer.data + pkt_size,
-			queue->buffer.length - pkt_size);
-	}
+	queue->buffer.offset += pkt_size;
 	queue->buffer.length -= pkt_size;
+
+	if (queue->buffer.offset < pkt_size ||
+	    queue->buffer.offset > queue->buffer.size) {
+		D_ERR("buffer offset overflow\n");
+		TALLOC_FREE(queue->buffer.data);
+		memset(&queue->buffer, 0, sizeof(queue->buffer));
+		goto failed;
+	}
 
 	if (queue->buffer.length > 0) {
 		/* There is more data to be processed, schedule an event */
@@ -137,6 +145,7 @@ static void queue_process(struct ctdb_queue *queue)
 			TALLOC_FREE(queue->buffer.data);
 			queue->buffer.size = 0;
 		}
+		queue->buffer.offset = 0;
 	}
 
 	/* It is the responsibility of the callback to free 'data' */
@@ -145,9 +154,7 @@ static void queue_process(struct ctdb_queue *queue)
 
 failed:
 	queue->callback(NULL, 0, queue->private_data);
-
 }
-
 
 /*
   called when an incoming connection is readable
@@ -156,7 +163,8 @@ failed:
 static void queue_io_read(struct ctdb_queue *queue)
 {
 	int num_ready = 0;
-	uint32_t pkt_size;
+	uint32_t pkt_size = 0;
+	uint32_t start_offset;
 	ssize_t nread;
 	uint8_t *data;
 
@@ -185,12 +193,12 @@ static void queue_io_read(struct ctdb_queue *queue)
 		goto data_read;
 	}
 
-	if (queue->buffer.length < sizeof(pkt_size)) {
+	if (sizeof(pkt_size) > queue->buffer.length) {
 		/* data read is not sufficient to gather message size */
-		goto data_read;
+		goto buffer_shift;
 	}
 
-	pkt_size = *(uint32_t *)queue->buffer.data;
+	pkt_size = *(uint32_t *)(queue->buffer.data + queue->buffer.offset);
 	if (pkt_size > queue->buffer.size) {
 		data = talloc_realloc_size(queue,
 					   queue->buffer.data,
@@ -201,14 +209,41 @@ static void queue_io_read(struct ctdb_queue *queue)
 		}
 		queue->buffer.data = data;
 		queue->buffer.size = pkt_size;
+		/* fall through here as we might need to move the data as well */
+	}
+
+buffer_shift:
+	if (sizeof(pkt_size) > queue->buffer.size - queue->buffer.offset ||
+	    pkt_size > queue->buffer.size - queue->buffer.offset) {
+		/* Either the offset has progressed too far to host at least
+		 * the size information or the remaining space in the buffer
+		 * is not sufficient for the full message.
+		 * Therefore, move the data and try again.
+		 */
+		memmove(queue->buffer.data,
+			queue->buffer.data + queue->buffer.offset,
+			queue->buffer.length);
+		queue->buffer.offset = 0;
 	}
 
 data_read:
-	num_ready = MIN(num_ready, queue->buffer.size - queue->buffer.length);
+	start_offset = queue->buffer.length + queue->buffer.offset;
+	if (start_offset < queue->buffer.length) {
+		DBG_ERR("Buffer overflow\n");
+		goto failed;
+	}
+	if (start_offset > queue->buffer.size) {
+		DBG_ERR("Buffer overflow\n");
+		goto failed;
+	}
+
+	num_ready = MIN(num_ready, queue->buffer.size - start_offset);
 
 	if (num_ready > 0) {
 		nread = sys_read(queue->fd,
-				 queue->buffer.data + queue->buffer.length,
+				 queue->buffer.data +
+					queue->buffer.offset +
+					queue->buffer.length,
 				 num_ready);
 		if (nread <= 0) {
 			DEBUG(DEBUG_ERR, ("read error nread=%d\n", (int)nread));
@@ -454,6 +489,12 @@ struct ctdb_queue *ctdb_queue_setup(struct ctdb_context *ctdb,
 	 */
 	if (queue->buffer_size == 0) {
 		queue->buffer_size = 1024;
+	}
+
+	queue->data_pool = talloc_pool(queue, queue->buffer_size);
+	if (queue->data_pool == NULL) {
+		TALLOC_FREE(queue);
+		return NULL;
 	}
 
 	return queue;

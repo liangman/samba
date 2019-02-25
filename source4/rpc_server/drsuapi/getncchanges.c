@@ -225,28 +225,6 @@ fail:
 	}
 }
 
-/*
- * Similar to function in repl_meta_data without the extra
- * dependencies.
- */
-static WERROR get_parsed_dns_trusted(TALLOC_CTX *mem_ctx, struct ldb_message_element *el,
-				  struct parsed_dn **pdn)
-{
-	/* Here we get a list of 'struct parsed_dns' without the parsing */
-	int i;
-	*pdn = talloc_zero_array(mem_ctx, struct parsed_dn,
-				 el->num_values);
-	if (!*pdn) {
-		return WERR_DS_DRA_INTERNAL_ERROR;
-	}
-
-	for (i = 0; i < el->num_values; i++) {
-		(*pdn)[i].v = &el->values[i];
-	}
-
-	return WERR_OK;
-}
-
 static WERROR getncchanges_update_revealed_list(struct ldb_context *sam_ctx,
 						TALLOC_CTX *mem_ctx,
 						struct ldb_message **msg,
@@ -290,13 +268,12 @@ static WERROR getncchanges_update_revealed_list(struct ldb_context *sam_ctx,
 		/* Replace the old value (if one exists) with the current one */
 		struct parsed_dn *link_dns;
 		struct parsed_dn *exact = NULL, *unused = NULL;
-		WERROR werr;
 		uint8_t attid[4];
 		DATA_BLOB partial_meta;
 
-		werr = get_parsed_dns_trusted(mem_ctx, existing, &link_dns);
-		if (!W_ERROR_IS_OK(werr)) {
-			return werr;
+		ldb_err = get_parsed_dns_trusted(mem_ctx, existing, &link_dns);
+		if (ldb_err != LDB_SUCCESS) {
+			return WERR_DS_DRA_INTERNAL_ERROR;
 		}
 
 		/* Construct a partial metadata blob to match on in the DB */
@@ -2698,6 +2675,8 @@ static struct getncchanges_repl_chunk * getncchanges_chunk_new(TALLOC_CTX *mem_c
 WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 				     struct drsuapi_DsGetNCChanges *r)
 {
+	struct auth_session_info *session_info =
+		dcesrv_call_session_info(dce_call);
 	struct drsuapi_DsReplicaObjectIdentifier *ncRoot;
 	int ret;
 	uint32_t i, k;
@@ -2799,12 +2778,12 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 		return WERR_DS_DRA_SOURCE_DISABLED;
 	}
 
-	user_sid = &dce_call->conn->auth_state.session_info->security_token->sids[PRIMARY_USER_SID_INDEX];
+	user_sid = &session_info->security_token->sids[PRIMARY_USER_SID_INDEX];
 
 	/* all clients must have GUID_DRS_GET_CHANGES */
 	werr = drs_security_access_check_nc_root(sam_ctx,
 						 mem_ctx,
-						 dce_call->conn->auth_state.session_info->security_token,
+						 session_info->security_token,
 						 req10->naming_context,
 						 GUID_DRS_GET_CHANGES);
 	if (!W_ERROR_IS_OK(werr)) {
@@ -2846,7 +2825,7 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 	if (is_gc_pas_request) {
 		werr = drs_security_access_check_nc_root(sam_ctx,
 							 mem_ctx,
-							 dce_call->conn->auth_state.session_info->security_token,
+							 session_info->security_token,
 							 req10->naming_context,
 							 GUID_DRS_GET_FILTERED_ATTRIBUTES);
 		if (W_ERROR_IS_OK(werr)) {
@@ -2863,7 +2842,7 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 	if (is_secret_request) {
 		werr = drs_security_access_check_nc_root(sam_ctx,
 							 mem_ctx,
-							 dce_call->conn->auth_state.session_info->security_token,
+							 session_info->security_token,
 							 req10->naming_context,
 							 GUID_DRS_GET_ALL_CHANGES);
 		if (!W_ERROR_IS_OK(werr)) {
@@ -2879,7 +2858,7 @@ WERROR dcesrv_drsuapi_DsGetNCChanges(struct dcesrv_call_state *dce_call, TALLOC_
 allowed:
 	/* for non-administrator replications, check that they have
 	   given the correct source_dsa_invocation_id */
-	security_level = security_session_user_level(dce_call->conn->auth_state.session_info,
+	security_level = security_session_user_level(session_info,
 						     samdb_domain_sid(sam_ctx));
 	if (security_level == SECURITY_RO_DOMAIN_CONTROLLER) {
 		if (req10->replica_flags & DRSUAPI_DRS_WRIT_REP) {
@@ -3067,7 +3046,7 @@ allowed:
 	ncRoot->guid = getnc_state->ncRoot_guid;
 
 	/* we need the session key for encrypting password attributes */
-	status = dcesrv_inherited_session_key(dce_call->conn, &session_key);
+	status = dcesrv_auth_session_key(dce_call, &session_key);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,(__location__ ": Failed to get session key\n"));
 		return WERR_DS_DRA_INTERNAL_ERROR;

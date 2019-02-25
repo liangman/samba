@@ -21,12 +21,8 @@
 #  License along with this library; if not, see <http://www.gnu.org/licenses/>.
 #
 
-import errno
 import os
-import re
-import subprocess
 import xml.etree.ElementTree as ET
-import sys
 import optparse
 
 # parse command line arguments
@@ -397,7 +393,7 @@ def make_param_table(path_in, path_out):
                         file_out.write("\t\t.flags\t\t= %s,\n" % flags)
                     file_out.write("\t},\n")
 
-        file_out.write("\n\t{NULL,  P_BOOL,  P_NONE,  0,  NULL,  NULL,  0}\n")
+        file_out.write("\n\t{ .label = NULL }\n")
         file_out.write("};\n")
         file_out.write("\n#endif /* %s */\n\n" % header)
     finally:

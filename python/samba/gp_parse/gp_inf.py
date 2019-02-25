@@ -29,6 +29,7 @@ from samba.gp_parse import GPParser
 # [MS-GPSB] Security Protocol Extension
 class GptTmplInfParser(GPParser):
     sections = None
+    encoding = 'utf-16le'
 
     class AbstractParam:
         __metaclass__ = ABCMeta
@@ -67,10 +68,10 @@ class GptTmplInfParser(GPParser):
         def write_section(self, header, fp):
             if len(self.param_list) ==  0:
                 return
-            fp.write((u'[%s]\r\n' % header).encode(self.encoding))
+            fp.write(u'[%s]\r\n' % header)
             for key_out, val_out in self.param_list:
-                fp.write((u'%s = %s\r\n' % (key_out,
-                                            val_out)).encode(self.encoding))
+                fp.write(u'%s = %s\r\n' % (key_out,
+                                           val_out))
 
         def build_xml(self, xml_parent):
             for key_ini, val_ini in self.param_list:
@@ -99,9 +100,9 @@ class GptTmplInfParser(GPParser):
         def write_section(self, header, fp):
             if len(self.param_list) ==  0:
                 return
-            fp.write((u'[%s]\r\n' % header).encode(self.encoding))
+            fp.write(u'[%s]\r\n' % header)
             for param in self.param_list:
-                fp.write((u'%s\r\n' % param).encode(self.encoding))
+                fp.write(u'%s\r\n' % param)
 
         def build_xml(self, xml_parent):
             for val_ini in self.param_list:
@@ -129,10 +130,10 @@ class GptTmplInfParser(GPParser):
         def write_section(self, header, fp):
             if len(self.param_list) ==  0:
                 return
-            fp.write((u'[%s]\r\n' % header).encode(self.encoding))
+            fp.write(u'[%s]\r\n' % header)
             for key_out, val in self.param_list:
                 val_out = u','.join(val)
-                fp.write((u'%s = %s\r\n' % (key_out, val_out)).encode(self.encoding))
+                fp.write(u'%s = %s\r\n' % (key_out, val_out))
 
         def build_xml(self, xml_parent):
             for key_ini, sid_list in self.param_list:
@@ -162,7 +163,6 @@ class GptTmplInfParser(GPParser):
         # param_list = [[Name, Mode, ACL],]
         def parse(self, line):
             parameters = [None, None, None]
-            index = 0
             current_arg = 0
 
             while line != '':
@@ -186,21 +186,12 @@ class GptTmplInfParser(GPParser):
             # print line
             self.param_list.append(parameters)
 
-        def from_xml(self, section):
-            for param in section.findall('Parameter'):
-                key = param.find('Key').text
-                value = param.find('Value').text
-                if value is None:
-                    value = ''
-
-                self.param_list.append((key, value))
-
         def write_section(self, header, fp):
             if len(self.param_list) ==  0:
                 return
-            fp.write((u'[%s]\r\n' % header).encode(self.encoding))
+            fp.write(u'[%s]\r\n' % header)
             for param in self.param_list:
-                fp.write((u'"%s",%s,"%s"\r\n' % tuple(param)).encode(self.encoding))
+                fp.write(u'"%s",%s,"%s"\r\n' % tuple(param))
 
         def build_xml(self, xml_parent):
             for name_mode_acl in self.param_list:
@@ -235,12 +226,12 @@ class GptTmplInfParser(GPParser):
         def write_section(self, header, fp):
             if len(self.param_list) ==  0:
                 return
-            fp.write((u'[%s]\r\n' % header).encode(self.encoding))
+            fp.write(u'[%s]\r\n' % header)
 
             for key, val in self.param_list:
                 key_out = u'__'.join(key)
                 val_out = u','.join(val)
-                fp.write((u'%s = %s\r\n' % (key_out, val_out)).encode(self.encoding))
+                fp.write(u'%s = %s\r\n' % (key_out, val_out))
 
         def build_xml(self, xml_parent):
             for key_ini, sid_list in self.param_list:
@@ -276,7 +267,7 @@ class GptTmplInfParser(GPParser):
             pass
 
         def write_section(self, header, fp):
-            fp.write(u'[Unicode]\r\nUnicode=yes\r\n'.encode(self.encoding))
+            fp.write(u'[Unicode]\r\nUnicode=yes\r\n')
 
         def build_xml(self, xml_parent):
             # We do not bother storing this field
@@ -293,7 +284,7 @@ class GptTmplInfParser(GPParser):
 
         def write_section(self, header, fp):
             out = u'[Version]\r\nsignature="$CHICAGO$"\r\nRevision=1\r\n'
-            fp.write(out.encode(self.encoding))
+            fp.write(out)
 
         def build_xml(self, xml_parent):
             # We do not bother storing this field
@@ -333,7 +324,6 @@ class GptTmplInfParser(GPParser):
                 header_name = match.group(1)
                 if header_name in self.sections:
                     current_param_parser = self.sections[header_name]
-                    current_header_name = header_name
                     # print current_param_parser
                     continue
 
@@ -343,12 +333,12 @@ class GptTmplInfParser(GPParser):
 
     def write_binary(self, filename):
         with codecs.open(filename, 'wb+',
-                         self.output_encoding) as f:
+                         self.encoding) as f:
             for s in self.sections:
                 self.sections[s].write_section(s, f)
 
     def write_xml(self, filename):
-        with file(filename, 'w') as f:
+        with open(filename, 'wb') as f:
             root = Element('GptTmplInfFile')
 
             for sec_inf in self.sections:

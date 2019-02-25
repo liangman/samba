@@ -37,6 +37,7 @@
 
 #include "common/db_hash.h"
 #include "common/logging.h"
+#include "common/path.h"
 #include "protocol/protocol.h"
 #include "protocol/protocol_api.h"
 #include "protocol/protocol_util.h"
@@ -586,7 +587,7 @@ static int h2i(char h)
 		return h - 'a' + 10;
 	}
 	if (h >= 'A' && h <= 'F') {
-		return h - 'f' + 10;
+		return h - 'A' + 10;
 	}
 	return h - '0';
 }
@@ -625,6 +626,9 @@ static int str_to_data(const char *str, size_t len, TALLOC_CTX *mem_ctx,
 
 	if (strncmp(str, "0x", 2) == 0) {
 		ret = hex_to_data(str+2, len-2, mem_ctx, &data);
+		if (ret != 0) {
+			return ret;
+		}
 	} else {
 		data.dptr = talloc_memdup(mem_ctx, str, len);
 		if (data.dptr == NULL) {
@@ -634,7 +638,7 @@ static int str_to_data(const char *str, size_t len, TALLOC_CTX *mem_ctx,
 	}
 
 	*out = data;
-	return ret;
+	return 0;
 }
 
 static int run_helper(TALLOC_CTX *mem_ctx, const char *command,
@@ -1232,6 +1236,11 @@ static void print_statistics_machine(struct ctdb_statistics *s,
 	printf("%.6f%s", s->call_latency.min, options.sep);
 	printf("%.6f%s", LATENCY_AVG(s->call_latency), options.sep);
 	printf("%.6f%s", s->call_latency.max, options.sep);
+
+	printf("%u%s", s->locks.latency.num, options.sep);
+	printf("%.6f%s", s->locks.latency.min, options.sep);
+	printf("%.6f%s", LATENCY_AVG(s->locks.latency), options.sep);
+	printf("%.6f%s", s->locks.latency.max, options.sep);
 
 	printf("%d%s", s->childwrite_latency.num, options.sep);
 	printf("%.6f%s", s->childwrite_latency.min, options.sep);
@@ -4803,7 +4812,7 @@ static int control_pfetch(TALLOC_CTX *mem_ctx, struct ctdb_context *ctdb,
 	TDB_DATA key, data;
 	int ret;
 
-	if (argc < 2 || argc > 3) {
+	if (argc != 2) {
 		usage("pfetch");
 	}
 
@@ -5972,7 +5981,7 @@ static const struct ctdb_cmd {
 	{ "setdbsticky", control_setdbsticky, false, true,
 		"enable sticky records", "<dbname|dbid>"},
 	{ "pfetch", control_pfetch, false, false,
-		"fetch record from persistent database", "<dbname|dbid> <key> [<file>]" },
+		"fetch record from persistent database", "<dbname|dbid> <key>" },
 	{ "pstore", control_pstore, false, false,
 		"write record to persistent database", "<dbname|dbid> <key> <value>" },
 	{ "pdelete", control_pdelete, false, false,
@@ -6059,22 +6068,70 @@ static void usage(const char *command)
 
 struct poptOption cmdline_options[] = {
 	POPT_AUTOHELP
-	{ "debug", 'd', POPT_ARG_STRING, &options.debuglevelstr, 0,
-		"debug level"},
-	{ "timelimit", 't', POPT_ARG_INT, &options.timelimit, 0,
-		"timelimit (in seconds)" },
-	{ "node", 'n', POPT_ARG_INT, &options.pnn, 0,
-		"node specification - integer" },
-	{ NULL, 'Y', POPT_ARG_NONE, &options.machinereadable, 0,
-		"enable machine readable output", NULL },
-	{ "separator", 'x', POPT_ARG_STRING, &options.sep, 0,
-		"specify separator for machine readable output", "CHAR" },
-	{ NULL, 'X', POPT_ARG_NONE, &options.machineparsable, 0,
-		"enable machine parsable output with separator |", NULL },
-	{ "verbose", 'v', POPT_ARG_NONE, &options.verbose, 0,
-		"enable verbose output", NULL },
-	{ "maxruntime", 'T', POPT_ARG_INT, &options.maxruntime, 0,
-		"die if runtime exceeds this limit (in seconds)" },
+	{
+		.longName   = "debug",
+		.shortName  = 'd',
+		.argInfo    = POPT_ARG_STRING,
+		.arg        = &options.debuglevelstr,
+		.val        = 0,
+		.descrip    = "debug level",
+	},
+	{
+		.longName   = "timelimit",
+		.shortName  = 't',
+		.argInfo    = POPT_ARG_INT,
+		.arg        = &options.timelimit,
+		.val        = 0,
+		.descrip    = "timelimit (in seconds)",
+	},
+	{
+		.longName   = "node",
+		.shortName  = 'n',
+		.argInfo    = POPT_ARG_INT,
+		.arg        = &options.pnn,
+		.val        = 0,
+		.descrip    = "node specification - integer",
+	},
+	{
+		.longName   = NULL,
+		.shortName  = 'Y',
+		.argInfo    = POPT_ARG_NONE,
+		.arg        = &options.machinereadable,
+		.val        = 0,
+		.descrip    = "enable machine readable output",
+	},
+	{
+		.longName   = "separator",
+		.shortName  = 'x',
+		.argInfo    = POPT_ARG_STRING,
+		.arg        = &options.sep,
+		.val        = 0,
+		.descrip    = "specify separator for machine readable output",
+		.argDescrip = "CHAR",
+	},
+	{
+		.shortName  = 'X',
+		.argInfo    = POPT_ARG_NONE,
+		.arg        = &options.machineparsable,
+		.val        = 0,
+		.descrip    = "enable machine parsable output with separator |",
+	},
+	{
+		.longName   = "verbose",
+		.shortName  = 'v',
+		.argInfo    = POPT_ARG_NONE,
+		.arg        = &options.verbose,
+		.val        = 0,
+		.descrip    = "enable verbose output",
+	},
+	{
+		.longName   = "maxruntime",
+		.shortName  = 'T',
+		.argInfo    = POPT_ARG_INT,
+		.arg        = &options.maxruntime,
+		.val        = 0,
+		.descrip    = "die if runtime exceeds this limit (in seconds)",
+	},
 	POPT_TABLEEND
 };
 
@@ -6119,9 +6176,10 @@ static int process_command(const struct ctdb_cmd *cmd, int argc,
 		goto fail;
 	}
 
-	ctdb_socket = getenv("CTDB_SOCKET");
+	ctdb_socket = path_socket(ctdb, "ctdbd");
 	if (ctdb_socket == NULL) {
-		ctdb_socket = CTDB_SOCKET;
+		fprintf(stderr, "Memory allocation error\n");
+		goto fail;
 	}
 
 	ret = ctdb_client_init(ctdb, ctdb->ev, ctdb_socket, &ctdb->client);
@@ -6186,6 +6244,7 @@ int main(int argc, const char *argv[])
 	int extra_argc;
 	const struct ctdb_cmd *cmd;
 	int loglevel;
+	bool ok;
 	int ret;
 
 	setlinebuf(stdout);
@@ -6244,11 +6303,11 @@ int main(int argc, const char *argv[])
 
 	/* Enable logging */
 	setup_logging("ctdb", DEBUG_STDERR);
-	if (debug_level_parse(options.debuglevelstr, &loglevel)) {
-		DEBUGLEVEL = loglevel;
-	} else {
-		DEBUGLEVEL = DEBUG_ERR;
+	ok = debug_level_parse(options.debuglevelstr, &loglevel);
+	if (!ok) {
+		loglevel = DEBUG_ERR;
 	}
+	debuglevel_set(loglevel);
 
 	signal(SIGALRM, alarm_handler);
 	alarm(options.maxruntime);

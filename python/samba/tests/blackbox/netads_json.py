@@ -19,6 +19,7 @@ import json
 import re
 
 import samba.tests
+from samba.compat import get_string
 
 COMMAND         = "bin/net ads"
 # extract keys from non-json version
@@ -42,7 +43,7 @@ class BaseWrapper (object):
             argv = "%s %s --json" % (COMMAND, self.subcmd)
             try:
                 out = self.check_output(argv)
-                json.loads (out)
+                json.loads (get_string(out))
             except samba.tests.BlackboxProcessError as e:
                 self.fail("Error calling [%s]: %s" % (argv, e))
 
@@ -56,7 +57,7 @@ class BaseWrapper (object):
             """
             argv = "%s %s" % (COMMAND, self.subcmd)
             try:
-                out_plain = self.check_output(argv)
+                out_plain = get_string(self.check_output(argv))
             except samba.tests.BlackboxProcessError as e:
                 self.fail("Error calling [%s]: %s" % (argv, e))
 
@@ -66,7 +67,7 @@ class BaseWrapper (object):
             except samba.tests.BlackboxProcessError as e:
                 self.fail("Error calling [%s]: %s" % (argv, e))
 
-            parsed = json.loads (out_jsobj)
+            parsed = json.loads (get_string(out_jsobj))
 
             for key in [ re.match (PLAIN_KEY_REGEX, line).group(1)
                          for line in out_plain.split ("\n")

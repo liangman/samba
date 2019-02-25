@@ -257,8 +257,6 @@
 /* Version 39 - Remove struct dfree_cached_info pointer from
 		connection struct */
 /* Bump to version 40, Samba 4.10 will ship with that */
-/* Version 40 - Introduce smb_vfs_ev_glue infrastructure. */
-/* Version 40 - Add vfs_not_implemented_* helper functions. */
 /* Version 40 - Add SMB_VFS_GETXATTRAT_SEND/RECV */
 /* Version 40 - Add SMB_VFS_GET_DOS_ATTRIBUTES_SEND/RECV */
 
@@ -283,9 +281,6 @@ struct smb_file_time;
 struct blocking_lock_record;
 struct smb_filename;
 struct dfs_GetDFSReferral;
-struct tevent_context;
-struct pthreadpool_tevent;
-struct smb_vfs_ev_glue;
 
 typedef union unid_t {
 	uid_t uid;
@@ -407,7 +402,6 @@ typedef struct files_struct {
 
 struct vuid_cache_entry {
 	struct auth_session_info *session_info;
-	struct smb_vfs_ev_glue *user_vfs_evg;
 	uint64_t vuid; /* SMB2 compat */
 	bool read_only;
 	uint32_t share_access;
@@ -455,8 +449,6 @@ typedef struct connection_struct {
 	 * on the vuid using this tid, this might change per SMB request.
 	 */
 	struct auth_session_info *session_info;
-	struct tevent_context *user_ev_ctx;
-	struct smb_vfs_ev_glue *user_vfs_evg;
 
 	/*
 	 * If the "force group" parameter is set, this is the primary gid that
@@ -524,8 +516,6 @@ struct smb_request {
 
 	size_t unread_bytes;
 	bool encrypted;
-	/* the tevent_context (wrapper) the request operates on */
-	struct tevent_context *ev_ctx;
 	connection_struct *conn;
 	struct smbd_server_connection *sconn;
 	struct smbXsrv_connection *xconn;
@@ -903,7 +893,7 @@ struct vfs_fn_pointers {
 
 	struct tevent_req *(*get_dos_attributes_send_fn)(
 				TALLOC_CTX *mem_ctx,
-				const struct smb_vfs_ev_glue *evg,
+				struct tevent_context *ev,
 				struct vfs_handle_struct *handle,
 				files_struct *dir_fsp,
 				struct smb_filename *smb_fname);
@@ -969,7 +959,7 @@ struct vfs_fn_pointers {
 					size_t size);
 	struct tevent_req *(*getxattrat_send_fn)(
 				TALLOC_CTX *mem_ctx,
-				const struct smb_vfs_ev_glue *evg,
+				struct tevent_context *ev,
 				struct vfs_handle_struct *handle,
 				files_struct *dir_fsp,
 				const struct smb_filename *smb_fname,
@@ -1370,7 +1360,7 @@ NTSTATUS smb_vfs_call_fset_dos_attributes(struct vfs_handle_struct *handle,
 					  uint32_t dosmode);
 struct tevent_req *smb_vfs_call_get_dos_attributes_send(
 			TALLOC_CTX *mem_ctx,
-			const struct smb_vfs_ev_glue *evg,
+			struct tevent_context *ev,
 			struct vfs_handle_struct *handle,
 			files_struct *dir_fsp,
 			struct smb_filename *smb_fname);
@@ -1481,7 +1471,7 @@ ssize_t smb_vfs_call_getxattr(struct vfs_handle_struct *handle,
 				size_t size);
 struct tevent_req *smb_vfs_call_getxattrat_send(
 			TALLOC_CTX *mem_ctx,
-			const struct smb_vfs_ev_glue *evg,
+			struct tevent_context *ev,
 			struct vfs_handle_struct *handle,
 			files_struct *dir_fsp,
 			const struct smb_filename *smb_fname,
@@ -1553,31 +1543,6 @@ void *vfs_fetch_fsp_extension(vfs_handle_struct *handle, files_struct *fsp);
 
 void smb_vfs_assert_all_fns(const struct vfs_fn_pointers* fns,
 			    const char *module);
-
-/*
- * Notice the "Design of the smb_vfs_ev_glue infrastructure"
- * comment in source3/smbd/vfs.c!
- *
- * This explains smb_vfs_ev_glue infrastructure in detail.
- */
-struct tevent_context *smb_vfs_ev_glue_ev_ctx(const struct smb_vfs_ev_glue *evg);
-struct pthreadpool_tevent *smb_vfs_ev_glue_tp_fd_safe(const struct smb_vfs_ev_glue *evg);
-struct pthreadpool_tevent *smb_vfs_ev_glue_tp_path_safe(const struct smb_vfs_ev_glue *evg);
-struct pthreadpool_tevent *smb_vfs_ev_glue_tp_chdir_safe(const struct smb_vfs_ev_glue *evg);
-const struct smb_vfs_ev_glue *smb_vfs_ev_glue_get_root_glue(const struct smb_vfs_ev_glue *evg);
-struct smb_vfs_ev_glue *smb_vfs_ev_glue_create(TALLOC_CTX *mem_ctx,
-				struct tevent_context *user_ev,
-				struct pthreadpool_tevent *user_tp_fd_safe,
-				struct pthreadpool_tevent *user_tp_path_safe,
-				struct pthreadpool_tevent *user_tp_chdir_safe,
-				struct tevent_context *root_ev,
-				struct pthreadpool_tevent *root_tp_fd_safe,
-				struct pthreadpool_tevent *root_tp_path_safe,
-				struct pthreadpool_tevent *root_tp_chdir_safe);
-struct smb_vfs_ev_glue *smb_vfs_ev_glue_create_switch(
-			TALLOC_CTX *mem_ctx,
-			const struct smb_vfs_ev_glue *return_evg,
-			const struct smb_vfs_ev_glue *run_evg);
 
 /*
  * Helper functions from source3/modules/vfs_not_implemented.c
@@ -1852,7 +1817,7 @@ NTSTATUS vfs_not_implemented_get_dos_attributes(struct vfs_handle_struct *handle
 						uint32_t *dosmode);
 struct tevent_req *vfs_not_implemented_get_dos_attributes_send(
 			TALLOC_CTX *mem_ctx,
-			const struct smb_vfs_ev_glue *evg,
+			struct tevent_context *ev,
 			struct vfs_handle_struct *handle,
 			files_struct *dir_fsp,
 			struct smb_filename *smb_fname);
@@ -1910,7 +1875,7 @@ ssize_t vfs_not_implemented_getxattr(vfs_handle_struct *handle,
 				size_t size);
 struct tevent_req *vfs_not_implemented_getxattrat_send(
 			TALLOC_CTX *mem_ctx,
-			const struct smb_vfs_ev_glue *evg,
+			struct tevent_context *ev,
 			struct vfs_handle_struct *handle,
 			files_struct *dir_fsp,
 			const struct smb_filename *smb_fname,

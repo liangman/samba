@@ -222,8 +222,9 @@ static int change_share_sec(TALLOC_CTX *mem_ctx, const char *sharename, char *th
 		}
 
 		if (!found) {
+		    struct dom_sid_buf buf;
 		    printf("ACL for SID %s not found\n",
-			   sid_string_tos(&sd->dacl->aces[i].trustee));
+			   dom_sid_str_buf(&sd->dacl->aces[i].trustee, &buf));
 		}
 	    }
 
@@ -333,22 +334,101 @@ int main(int argc, const char *argv[])
 	bool initialize_sid = False;
 	struct poptOption long_options[] = {
 		POPT_AUTOHELP
-		{ "remove", 'r', POPT_ARG_STRING, &the_acl, 'r', "Remove ACEs", "ACL" },
-		{ "modify", 'm', POPT_ARG_STRING, &the_acl, 'm', "Modify existing ACEs", "ACL" },
-		{ "add", 'a', POPT_ARG_STRING, &the_acl, 'a', "Add ACEs", "ACL" },
-		{ "replace", 'R', POPT_ARG_STRING, &the_acl, 'R', "Overwrite share permission ACL", "ACLS" },
-		{ "delete", 'D', POPT_ARG_NONE, NULL, 'D', "Delete the entire security descriptor" },
-		{ "setsddl", 'S', POPT_ARG_STRING, the_acl, 'S',
-		  "Set the SD in sddl format" },
-		{ "viewsddl", 'V', POPT_ARG_NONE, the_acl, 'V',
-		  "View the SD in sddl format" },
-		{ "view", 'v', POPT_ARG_NONE, NULL, 'v', "View current share permissions" },
-		{ "view-all", 0, POPT_ARG_NONE, NULL, OPT_VIEW_ALL,
-		  "View all current share permissions" },
-		{ "machine-sid", 'M', POPT_ARG_NONE, NULL, 'M', "Initialize the machine SID" },
-		{ "force", 'F', POPT_ARG_NONE, NULL, 'F', "Force storing the ACL", "ACLS" },
+		{
+			.longName   = "remove",
+			.shortName  = 'r',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &the_acl,
+			.val        = 'r',
+			.descrip    = "Remove ACEs",
+			.argDescrip = "ACL",
+		},
+		{
+			.longName   = "modify",
+			.shortName  = 'm',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &the_acl,
+			.val        = 'm',
+			.descrip    = "Modify existing ACEs",
+			.argDescrip = "ACL",
+		},
+		{
+			.longName   = "add",
+			.shortName  = 'a',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &the_acl,
+			.val        = 'a',
+			.descrip    = "Add ACEs",
+			.argDescrip = "ACL",
+		},
+		{
+			.longName   = "replace",
+			.shortName  = 'R',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = &the_acl,
+			.val        = 'R',
+			.descrip    = "Overwrite share permission ACL",
+			.argDescrip = "ACLS",
+		},
+		{
+			.longName   = "delete",
+			.shortName  = 'D',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'D',
+			.descrip    = "Delete the entire security descriptor",
+		},
+		{
+			.longName   = "setsddl",
+			.shortName  = 'S',
+			.argInfo    = POPT_ARG_STRING,
+			.arg        = the_acl,
+			.val        = 'S',
+			.descrip    = "Set the SD in sddl format",
+		},
+		{
+			.longName   = "viewsddl",
+			.shortName  = 'V',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = the_acl,
+			.val        = 'V',
+			.descrip    = "View the SD in sddl format",
+		},
+		{
+			.longName   = "view",
+			.shortName  = 'v',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'v',
+			.descrip    = "View current share permissions",
+		},
+		{
+			.longName   = "view-all",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_VIEW_ALL,
+			.descrip    = "View all current share permissions",
+		},
+		{
+			.longName   = "machine-sid",
+			.shortName  = 'M',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'M',
+			.descrip    = "Initialize the machine SID",
+		},
+		{
+			.longName   = "force",
+			.shortName  = 'F',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'F',
+			.descrip    = "Force storing the ACL",
+			.argDescrip = "ACLS",
+		},
 		POPT_COMMON_SAMBA
-		{ NULL }
+		POPT_TABLEEND
 	};
 
 	if ( !(ctx = talloc_stackframe()) ) {
@@ -428,13 +508,14 @@ int main(int argc, const char *argv[])
 
 	if ( initialize_sid ) {
 		struct dom_sid *sid = get_global_sam_sid();
+		struct dom_sid_buf buf;
 
 		if ( !sid ) {
 			fprintf( stderr, "Failed to retrieve Machine SID!\n");
 			return 3;
 		}
 
-		printf ("%s\n", sid_string_tos( sid ) );
+		printf ("%s\n", dom_sid_str_buf(sid, &buf) );
 		return 0;
 	}
 

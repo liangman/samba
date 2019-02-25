@@ -84,6 +84,7 @@
 #include "rpc_server/rpc_ncacn_np.h"
 #include "auth/credentials/credentials.h"
 #include "lib/param/param.h"
+#include "lib/gencache.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -240,7 +241,8 @@ static bool fork_child_dc_connect(struct winbindd_domain *domain)
 
 	if (!override_logfile) {
 		if (asprintf(&lfile, "%s/log.winbindd-dc-connect", get_dyn_LOGFILEBASE()) == -1) {
-			DEBUG(0, ("fork_child_dc_connect: out of memory.\n"));
+			DBG_ERR("fork_child_dc_connect: "
+				"out of memory in asprintf().\n");
 			_exit(1);
 		}
 	}
@@ -2550,15 +2552,15 @@ no_dssetup:
 			    !dom_sid_equal(&domain->sid,
 					   lsa_info->dns.sid))
 			{
+				struct dom_sid_buf buf1, buf2;
 				DEBUG(1, ("set_dc_type_and_flags_connect: DC "
 					  "for domain %s (%s) claimed it was "
 					  "a DC for domain %s, refusing to "
 					  "initialize\n",
-					  dom_sid_string(talloc_tos(),
-							 &domain->sid),
+					  dom_sid_str_buf(&domain->sid, &buf1),
 					  domain->name,
-					  dom_sid_string(talloc_tos(),
-							 lsa_info->dns.sid)));
+					  dom_sid_str_buf(lsa_info->dns.sid,
+							  &buf2)));
 				TALLOC_FREE(cli);
 				TALLOC_FREE(mem_ctx);
 				return;
@@ -2609,16 +2611,18 @@ no_dssetup:
 				    !dom_sid_equal(&domain->sid,
 						lsa_info->account_domain.sid))
 				{
+					struct dom_sid_buf buf1, buf2;
 					DEBUG(1,
 					      ("set_dc_type_and_flags_connect: "
 					       "DC for domain %s (%s) claimed "
 					       "it was a DC for domain %s, "
 					       "refusing to initialize\n",
-					       dom_sid_string(talloc_tos(),
-							      &domain->sid),
+					       dom_sid_str_buf(
+						       &domain->sid, &buf1),
 					       domain->name,
-					       dom_sid_string(talloc_tos(),
-						lsa_info->account_domain.sid)));
+					       dom_sid_str_buf(
+						lsa_info->account_domain.sid,
+						&buf2)));
 					TALLOC_FREE(cli);
 					TALLOC_FREE(mem_ctx);
 					return;

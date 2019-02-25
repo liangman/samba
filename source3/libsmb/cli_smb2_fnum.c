@@ -171,6 +171,7 @@ struct tevent_req *cli_smb2_create_fnum_send(TALLOC_CTX *mem_ctx,
 					     struct cli_state *cli,
 					     const char *fname,
 					     uint32_t create_flags,
+					     uint32_t impersonation_level,
 					     uint32_t desired_access,
 					     uint32_t file_attributes,
 					     uint32_t share_access,
@@ -262,7 +263,7 @@ struct tevent_req *cli_smb2_create_fnum_send(TALLOC_CTX *mem_ctx,
 				     cli->smb2.tcon,
 				     fname,
 				     flags_to_smb2_oplock(create_flags),
-				     SMB2_IMPERSONATION_IMPERSONATION,
+				     impersonation_level,
 				     desired_access,
 				     file_attributes,
 				     share_access,
@@ -334,6 +335,7 @@ NTSTATUS cli_smb2_create_fnum_recv(struct tevent_req *req, uint16_t *pfnum,
 NTSTATUS cli_smb2_create_fnum(struct cli_state *cli,
 			const char *fname,
 			uint32_t create_flags,
+			uint32_t impersonation_level,
 			uint32_t desired_access,
 			uint32_t file_attributes,
 			uint32_t share_access,
@@ -359,6 +361,7 @@ NTSTATUS cli_smb2_create_fnum(struct cli_state *cli,
 		goto fail;
 	}
 	req = cli_smb2_create_fnum_send(frame, ev, cli, fname, create_flags,
+					impersonation_level,
 					desired_access, file_attributes,
 					share_access, create_disposition,
 					create_options);
@@ -641,6 +644,7 @@ NTSTATUS cli_smb2_mkdir(struct cli_state *cli, const char *dname)
 	status = cli_smb2_create_fnum(cli,
 			dname,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			FILE_READ_ATTRIBUTES,	/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE, /* share_access */
@@ -679,6 +683,7 @@ NTSTATUS cli_smb2_rmdir(struct cli_state *cli, const char *dname)
 	status = cli_smb2_create_fnum(cli,
 			dname,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			DELETE_ACCESS,		/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -697,6 +702,7 @@ NTSTATUS cli_smb2_rmdir(struct cli_state *cli, const char *dname)
 		status = cli_smb2_create_fnum(cli,
 			dname,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			DELETE_ACCESS,		/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -745,6 +751,7 @@ NTSTATUS cli_smb2_unlink(struct cli_state *cli, const char *fname)
 	status = cli_smb2_create_fnum(cli,
 			fname,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			DELETE_ACCESS,		/* desired_access */
 			FILE_ATTRIBUTE_NORMAL, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -763,6 +770,7 @@ NTSTATUS cli_smb2_unlink(struct cli_state *cli, const char *fname)
 		status = cli_smb2_create_fnum(cli,
 			fname,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			DELETE_ACCESS,		/* desired_access */
 			FILE_ATTRIBUTE_NORMAL, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -816,7 +824,9 @@ static NTSTATUS parse_finfo_id_both_directory_info(uint8_t *dir_data,
 	finfo->mtime_ts = interpret_long_date((const char *)dir_data + 24);
 	finfo->ctime_ts = interpret_long_date((const char *)dir_data + 32);
 	finfo->size = IVAL2_TO_SMB_BIG_UINT(dir_data + 40, 0);
+	finfo->allocated_size = IVAL2_TO_SMB_BIG_UINT(dir_data + 48, 0);
 	finfo->mode = CVAL(dir_data + 56, 0);
+	finfo->ino = IVAL2_TO_SMB_BIG_UINT(dir_data + 96, 0);
 	namelen = IVAL(dir_data + 60,0);
 	if (namelen > (dir_data_length - 104)) {
 		return NT_STATUS_INFO_LENGTH_MISMATCH;
@@ -911,7 +921,9 @@ NTSTATUS cli_smb2_list(struct cli_state *cli,
 	TALLOC_CTX *frame = talloc_stackframe();
 	TALLOC_CTX *subframe = NULL;
 	bool mask_has_wild;
-	uint32_t max_trans = smb2cli_conn_max_trans_size(cli->conn);
+	uint32_t max_trans;
+	uint32_t max_avail_len;
+	bool ok;
 
 	if (smbXcli_conn_has_async_calls(cli->conn)) {
 		/*
@@ -940,6 +952,7 @@ NTSTATUS cli_smb2_list(struct cli_state *cli,
 	status = cli_smb2_create_fnum(cli,
 			parent_dir,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			SEC_DIR_LIST|SEC_DIR_READ_ATTRIBUTE,/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE, /* share_access */
@@ -957,6 +970,16 @@ NTSTATUS cli_smb2_list(struct cli_state *cli,
 					&ph);
 	if (!NT_STATUS_IS_OK(status)) {
 		goto fail;
+	}
+
+	/*
+	 * ideally, use the max transaction size, but don't send a request
+	 * bigger than we have credits available for
+	 */
+	max_trans = smb2cli_conn_max_trans_size(cli->conn);
+	ok = smb2cli_conn_req_possible(cli->conn, &max_avail_len);
+	if (ok) {
+		max_trans = MIN(max_trans, max_avail_len);
 	}
 
 	do {
@@ -1116,6 +1139,7 @@ NTSTATUS cli_smb2_qpathinfo_basic(struct cli_state *cli,
 	status = cli_smb2_create_fnum(cli,
 			name,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			FILE_READ_ATTRIBUTES,	/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -1129,6 +1153,7 @@ NTSTATUS cli_smb2_qpathinfo_basic(struct cli_state *cli,
 		status = cli_smb2_create_fnum(cli,
 			name,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			FILE_READ_ATTRIBUTES,		/* desired_access */
 			0, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -1181,6 +1206,7 @@ NTSTATUS cli_smb2_chkpath(struct cli_state *cli,
 	status = cli_smb2_create_fnum(cli,
 			name,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			FILE_READ_ATTRIBUTES,	/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -1226,6 +1252,7 @@ static NTSTATUS get_fnum_from_path(struct cli_state *cli,
 	status = cli_smb2_create_fnum(cli,
 			name,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			desired_access,
 			0, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -1245,6 +1272,7 @@ static NTSTATUS get_fnum_from_path(struct cli_state *cli,
 		status = cli_smb2_create_fnum(cli,
 			name,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			desired_access,
 			0, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -1259,6 +1287,7 @@ static NTSTATUS get_fnum_from_path(struct cli_state *cli,
 		status = cli_smb2_create_fnum(cli,
 			name,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			desired_access,
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -1994,6 +2023,7 @@ NTSTATUS cli_smb2_dskattr(struct cli_state *cli, const char *path,
 	status = cli_smb2_create_fnum(cli,
 			path,
 			0,			/* create_flags */
+			SMB2_IMPERSONATION_IMPERSONATION,
 			FILE_READ_ATTRIBUTES,	/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 			FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, /* share_access */
@@ -2103,6 +2133,7 @@ NTSTATUS cli_smb2_get_fs_full_size_info(struct cli_state *cli,
 	/* First open the top level directory. */
 	status =
 	    cli_smb2_create_fnum(cli, "", 0,		   /* create_flags */
+				 SMB2_IMPERSONATION_IMPERSONATION,
 				 FILE_READ_ATTRIBUTES,     /* desired_access */
 				 FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 				 FILE_SHARE_READ | FILE_SHARE_WRITE |
@@ -2195,6 +2226,7 @@ NTSTATUS cli_smb2_get_fs_attr_info(struct cli_state *cli, uint32_t *fs_attr)
 	/* First open the top level directory. */
 	status =
 	    cli_smb2_create_fnum(cli, "", 0,		   /* create_flags */
+				 SMB2_IMPERSONATION_IMPERSONATION,
 				 FILE_READ_ATTRIBUTES,     /* desired_access */
 				 FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 				 FILE_SHARE_READ | FILE_SHARE_WRITE |
@@ -2280,6 +2312,7 @@ NTSTATUS cli_smb2_get_fs_volume_info(struct cli_state *cli,
 	/* First open the top level directory. */
 	status =
 	    cli_smb2_create_fnum(cli, "", 0,		   /* create_flags */
+				 SMB2_IMPERSONATION_IMPERSONATION,
 				 FILE_READ_ATTRIBUTES,     /* desired_access */
 				 FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
 				 FILE_SHARE_READ | FILE_SHARE_WRITE |
@@ -4196,52 +4229,95 @@ NTSTATUS cli_smb2_ftruncate(struct cli_state *cli,
 	return status;
 }
 
-NTSTATUS cli_smb2_notify(struct cli_state *cli, uint16_t fnum,
-			 uint32_t buffer_size, uint32_t completion_filter,
-			 bool recursive, TALLOC_CTX *mem_ctx,
-			 struct notify_change **pchanges,
-			 uint32_t *pnum_changes)
-{
-	NTSTATUS status;
-	struct smb2_hnd *ph = NULL;
-	TALLOC_CTX *frame = talloc_stackframe();
-	uint8_t *base;
-	uint32_t len, ofs;
-	struct notify_change *changes = NULL;
-	size_t num_changes = 0;
+struct cli_smb2_notify_state {
+	struct tevent_req *subreq;
+	struct notify_change *changes;
+	size_t num_changes;
+};
 
-	if (smbXcli_conn_has_async_calls(cli->conn)) {
-		/*
-		 * Can't use sync call while an async call is in flight
-		 */
-		status = NT_STATUS_INVALID_PARAMETER;
-		goto fail;
+static void cli_smb2_notify_done(struct tevent_req *subreq);
+static bool cli_smb2_notify_cancel(struct tevent_req *req);
+
+struct tevent_req *cli_smb2_notify_send(
+	TALLOC_CTX *mem_ctx,
+	struct tevent_context *ev,
+	struct cli_state *cli,
+	uint16_t fnum,
+	uint32_t buffer_size,
+	uint32_t completion_filter,
+	bool recursive)
+{
+	struct tevent_req *req = NULL;
+	struct cli_smb2_notify_state *state = NULL;
+	struct smb2_hnd *ph = NULL;
+	NTSTATUS status;
+
+	req = tevent_req_create(mem_ctx, &state,
+				struct cli_smb2_notify_state);
+	if (req == NULL) {
+		return NULL;
 	}
 
 	if (smbXcli_conn_protocol(cli->conn) < PROTOCOL_SMB2_02) {
-		status = NT_STATUS_INVALID_PARAMETER;
-		goto fail;
+		tevent_req_nterror(req, NT_STATUS_INVALID_PARAMETER);
+		return tevent_req_post(req, ev);
 	}
 
 	status = map_fnum_to_smb2_handle(cli, fnum, &ph);
-	if (!NT_STATUS_IS_OK(status)) {
-		goto fail;
+	if (tevent_req_nterror(req, status)) {
+		return tevent_req_post(req, ev);
 	}
 
-	status = smb2cli_notify(cli->conn, cli->timeout,
-				cli->smb2.session, cli->smb2.tcon,
-				buffer_size,
-				ph->fid_persistent, ph->fid_volatile,
-				completion_filter, recursive,
-				frame, &base, &len);
+	state->subreq = smb2cli_notify_send(
+		state,
+		ev,
+		cli->conn,
+		cli->timeout,
+		cli->smb2.session,
+		cli->smb2.tcon,
+		buffer_size,
+		ph->fid_persistent,
+		ph->fid_volatile,
+		completion_filter,
+		recursive);
+	if (tevent_req_nomem(state->subreq, req)) {
+		return tevent_req_post(req, ev);
+	}
+	tevent_req_set_callback(state->subreq, cli_smb2_notify_done, req);
+	tevent_req_set_cancel_fn(req, cli_smb2_notify_cancel);
+	return req;
+}
+
+static bool cli_smb2_notify_cancel(struct tevent_req *req)
+{
+	struct cli_smb2_notify_state *state = tevent_req_data(
+		req, struct cli_smb2_notify_state);
+	bool ok;
+
+	ok = tevent_req_cancel(state->subreq);
+	return ok;
+}
+
+static void cli_smb2_notify_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req = tevent_req_callback_data(
+		subreq, struct tevent_req);
+	struct cli_smb2_notify_state *state = tevent_req_data(
+		req, struct cli_smb2_notify_state);
+	uint8_t *base;
+	uint32_t len;
+	uint32_t ofs;
+	NTSTATUS status;
+
+	status = smb2cli_notify_recv(subreq, state, &base, &len);
+	TALLOC_FREE(subreq);
 
 	if (NT_STATUS_EQUAL(status, NT_STATUS_IO_TIMEOUT)) {
-		len = 0;
-		status = NT_STATUS_OK;
+		tevent_req_done(req);
+		return;
 	}
-
-	if (!NT_STATUS_IS_OK(status)) {
-		goto fail;
+	if (tevent_req_nterror(req, status)) {
+		return;
 	}
 
 	ofs = 0;
@@ -4254,30 +4330,39 @@ NTSTATUS cli_smb2_notify(struct cli_state *cli, uint16_t fnum,
 		size_t namelen;
 		bool ok;
 
-		tmp = talloc_realloc(frame, changes, struct notify_change,
-				     num_changes + 1);
-		if (tmp == NULL) {
-			status = NT_STATUS_NO_MEMORY;
-			goto fail;
+		tmp = talloc_realloc(
+			state,
+			state->changes,
+			struct notify_change,
+			state->num_changes + 1);
+		if (tevent_req_nomem(tmp, req)) {
+			return;
 		}
-		changes = tmp;
-		c = &changes[num_changes];
-		num_changes += 1;
+		state->changes = tmp;
+		c = &state->changes[state->num_changes];
+		state->num_changes += 1;
 
 		if (smb_buffer_oob(len, ofs, next_ofs) ||
 		    smb_buffer_oob(len, ofs+12, file_name_length)) {
-			status = NT_STATUS_INVALID_NETWORK_RESPONSE;
-			goto fail;
+			tevent_req_nterror(
+				req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
 		}
 
 		c->action = IVAL(base, ofs+4);
 
-		ok = convert_string_talloc(changes, CH_UTF16LE, CH_UNIX,
-					   base + ofs + 12, file_name_length,
-					   &c->name, &namelen);
+		ok = convert_string_talloc(
+			state->changes,
+			CH_UTF16LE,
+			CH_UNIX,
+			base + ofs + 12,
+			file_name_length,
+			&c->name,
+			&namelen);
 		if (!ok) {
-			status = NT_STATUS_INVALID_NETWORK_RESPONSE;
-			goto fail;
+			tevent_req_nterror(
+				req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+			return;
 		}
 
 		if (next_ofs == 0) {
@@ -4286,13 +4371,64 @@ NTSTATUS cli_smb2_notify(struct cli_state *cli, uint16_t fnum,
 		ofs += next_ofs;
 	}
 
-	*pchanges = talloc_move(mem_ctx, &changes);
-	*pnum_changes = num_changes;
-	status = NT_STATUS_OK;
+	tevent_req_done(req);
+}
 
+NTSTATUS cli_smb2_notify_recv(struct tevent_req *req,
+			      TALLOC_CTX *mem_ctx,
+			      struct notify_change **pchanges,
+			      uint32_t *pnum_changes)
+{
+	struct cli_smb2_notify_state *state = tevent_req_data(
+		req, struct cli_smb2_notify_state);
+	NTSTATUS status;
+
+	if (tevent_req_is_nterror(req, &status)) {
+		return status;
+	}
+	*pchanges = talloc_move(mem_ctx, &state->changes);
+	*pnum_changes = state->num_changes;
+	return NT_STATUS_OK;
+}
+
+NTSTATUS cli_smb2_notify(struct cli_state *cli, uint16_t fnum,
+			 uint32_t buffer_size, uint32_t completion_filter,
+			 bool recursive, TALLOC_CTX *mem_ctx,
+			 struct notify_change **pchanges,
+			 uint32_t *pnum_changes)
+{
+	TALLOC_CTX *frame = talloc_stackframe();
+	struct tevent_context *ev;
+	struct tevent_req *req;
+	NTSTATUS status = NT_STATUS_NO_MEMORY;
+
+	if (smbXcli_conn_has_async_calls(cli->conn)) {
+		/*
+		 * Can't use sync call while an async call is in flight
+		 */
+		status = NT_STATUS_INVALID_PARAMETER;
+		goto fail;
+	}
+	ev = samba_tevent_context_init(frame);
+	if (ev == NULL) {
+		goto fail;
+	}
+	req = cli_smb2_notify_send(
+		frame,
+		ev,
+		cli,
+		fnum,
+		buffer_size,
+		completion_filter,
+		recursive);
+	if (req == NULL) {
+		goto fail;
+	}
+	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
+		goto fail;
+	}
+	status = cli_smb2_notify_recv(req, mem_ctx, pchanges, pnum_changes);
 fail:
-	cli->raw_status = status;
-
 	TALLOC_FREE(frame);
 	return status;
 }

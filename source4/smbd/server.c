@@ -45,6 +45,7 @@
 #include "libds/common/roles.h"
 #include "lib/util/tfork.h"
 #include "dsdb/samdb/ldb_modules/util.h"
+#include "lib/util/server_id.h"
 
 #ifdef HAVE_PTHREAD
 #include <pthread.h>
@@ -128,7 +129,7 @@ static void sig_hup(int sig)
 
 static void sig_term(int sig)
 {
-#if HAVE_GETPGRP
+#ifdef HAVE_GETPGRP
 	if (getpgrp() == getpid()) {
 		/*
 		 * We're the process group leader, send
@@ -198,7 +199,7 @@ static void server_stdin_handler(struct tevent_context *event_ctx,
 	if (read(0, &c, 1) == 0) {
 		DBG_ERR("%s: EOF on stdin - PID %d terminating\n",
 			state->binary_name, (int)getpid());
-#if HAVE_GETPGRP
+#ifdef HAVE_GETPGRP
 		if (getpgrp() == getpid()) {
 			DBG_ERR("Sending SIGTERM from pid %d\n",
 				(int)getpid());
@@ -292,6 +293,31 @@ static int prime_ldb_databases(struct tevent_context *event_ctx, bool *am_backup
 }
 
 /*
+  called from 'smbcontrol samba shutdown'
+ */
+static void samba_parent_shutdown(struct imessaging_context *msg,
+				  void *private_data,
+				  uint32_t msg_type,
+				  struct server_id src,
+				  DATA_BLOB *data)
+{
+	struct server_state *state =
+		talloc_get_type_abort(private_data,
+		struct server_state);
+	struct server_id_buf src_buf;
+	struct server_id dst = imessaging_get_server_id(msg);
+	struct server_id_buf dst_buf;
+
+	DBG_ERR("samba_shutdown of %s %s: from %s\n",
+		state->binary_name,
+		server_id_str_buf(dst, &dst_buf),
+		server_id_str_buf(src, &src_buf));
+
+	TALLOC_FREE(state);
+	exit(0);
+}
+
+/*
   called when a fatal condition occurs in a child task
  */
 static NTSTATUS samba_terminate(struct irpc_message *msg,
@@ -316,7 +342,7 @@ static NTSTATUS setup_parent_messaging(struct server_state *state,
 
 	msg = imessaging_init(state->event_ctx,
 			      lp_ctx,
-			      cluster_id(0, SAMBA_PARENT_TASKID),
+			      cluster_id(getpid(), SAMBA_PARENT_TASKID),
 			      state->event_ctx);
 	NT_STATUS_HAVE_NO_MEMORY(msg);
 
@@ -325,10 +351,19 @@ static NTSTATUS setup_parent_messaging(struct server_state *state,
 		return status;
 	}
 
+	status = imessaging_register(msg, state, MSG_SHUTDOWN,
+				     samba_parent_shutdown);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
 	status = IRPC_REGISTER(msg, irpc, SAMBA_TERMINATE,
 			       samba_terminate, state);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
 
-	return status;
+	return NT_STATUS_OK;
 }
 
 
@@ -417,7 +452,7 @@ static int binary_smbd_main(const char *binary_name,
 	init_module_fn *shared_init;
 	uint16_t stdin_event_flags;
 	NTSTATUS status;
-	const char *model = "standard";
+	const char *model = "prefork";
 	int max_runtime = 0;
 	struct stat st;
 	enum {
@@ -430,24 +465,59 @@ static int binary_smbd_main(const char *binary_name,
 	};
 	struct poptOption long_options[] = {
 		POPT_AUTOHELP
-		{"daemon", 'D', POPT_ARG_NONE, NULL, OPT_DAEMON,
-		 "Become a daemon (default)", NULL },
-		{"foreground", 'F', POPT_ARG_NONE, NULL, OPT_FOREGROUND,
-		 "Run the daemon in foreground", NULL },
-		{"interactive",	'i', POPT_ARG_NONE, NULL, OPT_INTERACTIVE,
-		 "Run interactive (not a daemon)", NULL},
-		{"model", 'M', POPT_ARG_STRING,	NULL, OPT_PROCESS_MODEL,
-		 "Select process model", "MODEL"},
-		{"maximum-runtime",0, POPT_ARG_INT, &max_runtime, 0,
-		 "set maximum runtime of the server process, "
-			"till autotermination", "seconds"},
-		{"show-build", 'b', POPT_ARG_NONE, NULL, OPT_SHOW_BUILD,
-			"show build info", NULL },
-		{"no-process-group", '\0', POPT_ARG_NONE, NULL,
-		  OPT_NO_PROCESS_GROUP, "Don't create a new process group" },
+		{
+			.longName   = "daemon",
+			.shortName  = 'D',
+			.argInfo    = POPT_ARG_NONE,
+			.val        = OPT_DAEMON,
+			.descrip    = "Become a daemon (default)",
+		},
+		{
+			.longName   = "foreground",
+			.shortName  = 'F',
+			.argInfo    = POPT_ARG_NONE,
+			.val        = OPT_FOREGROUND,
+			.descrip    = "Run the daemon in foreground",
+		},
+		{
+			.longName   = "interactive",
+			.shortName  = 'i',
+			.argInfo    = POPT_ARG_NONE,
+			.val        = OPT_INTERACTIVE,
+			.descrip    = "Run interactive (not a daemon)",
+		},
+		{
+			.longName   = "model",
+			.shortName  = 'M',
+			.argInfo    = POPT_ARG_STRING,
+			.val        = OPT_PROCESS_MODEL,
+			.descrip    = "Select process model",
+			.argDescrip = "MODEL",
+		},
+		{
+			.longName   = "maximum-runtime",
+			.argInfo    = POPT_ARG_INT,
+			.arg        = &max_runtime,
+			.descrip    = "set maximum runtime of the server process, "
+			              "till autotermination",
+			.argDescrip = "seconds"
+		},
+		{
+			.longName   = "show-build",
+			.shortName  = 'b',
+			.argInfo    = POPT_ARG_NONE,
+			.val        = OPT_SHOW_BUILD,
+			.descrip    = "show build info",
+		},
+		{
+			.longName   = "no-process-group",
+			.argInfo    = POPT_ARG_NONE,
+			.val        = OPT_NO_PROCESS_GROUP,
+			.descrip    = "Don't create a new process group",
+		},
 		POPT_COMMON_SAMBA
 		POPT_COMMON_VERSION
-		{ NULL }
+		POPT_TABLEEND
 	};
 	struct server_state *state = NULL;
 	struct tevent_signal *se = NULL;
@@ -509,7 +579,7 @@ static int binary_smbd_main(const char *binary_name,
 		binary_name,
 		SAMBA_VERSION_STRING));
 	DEBUGADD(0,("Copyright Andrew Tridgell and the Samba Team"
-		" 1992-2018\n"));
+		" 1992-2019\n"));
 
 	if (sizeof(uint16_t) < 2 ||
 			sizeof(uint32_t) < 4 ||
@@ -594,7 +664,7 @@ static int binary_smbd_main(const char *binary_name,
 		stdin_event_flags = 0;
 	}
 
-#if HAVE_SETPGID
+#ifdef HAVE_SETPGID
 	/*
 	 * If we're interactive we want to set our own process group for
 	 * signal management, unless --no-process-group specified.

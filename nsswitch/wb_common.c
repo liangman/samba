@@ -27,6 +27,12 @@
 #include "system/select.h"
 #include "winbind_client.h"
 
+#ifdef HAVE_PTHREAD_H
+#include <pthread.h>
+#endif
+
+static char client_name[32];
+
 /* Global context */
 
 struct winbindd_context {
@@ -35,11 +41,31 @@ struct winbindd_context {
 	pid_t our_pid;		/* calling process pid */
 };
 
-static struct winbindd_context wb_global_ctx = {
-	.winbindd_fd = -1,
-	.is_privileged = false,
-	.our_pid = 0
-};
+#ifdef HAVE_PTHREAD
+static pthread_mutex_t wb_global_ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+static struct winbindd_context *get_wb_global_ctx(void)
+{
+	static struct winbindd_context wb_global_ctx = {
+		.winbindd_fd = -1,
+		.is_privileged = false,
+		.our_pid = 0
+	};
+
+#ifdef HAVE_PTHREAD
+	pthread_mutex_lock(&wb_global_ctx_mutex);
+#endif
+	return &wb_global_ctx;
+}
+
+static void put_wb_global_ctx(void)
+{
+#ifdef HAVE_PTHREAD
+	pthread_mutex_unlock(&wb_global_ctx_mutex);
+#endif
+	return;
+}
 
 /* Free a response structure */
 
@@ -49,6 +75,37 @@ void winbindd_free_response(struct winbindd_response *response)
 
 	if (response)
 		SAFE_FREE(response->extra_data.data);
+}
+
+void winbind_set_client_name(const char *name)
+{
+	if (name == NULL || strlen(name) == 0) {
+		return;
+	}
+
+	(void)snprintf(client_name, sizeof(client_name), "%s", name);
+}
+
+static const char *winbind_get_client_name(void)
+{
+	if (client_name[0] == '\0') {
+		const char *progname = getprogname();
+		int len;
+
+		if (progname == NULL) {
+			progname = "<unknown>";
+		}
+
+		len = snprintf(client_name,
+			       sizeof(client_name),
+			       "%s",
+			       progname);
+		if (len <= 0) {
+			return progname;
+		}
+	}
+
+	return client_name;
 }
 
 /* Initialise a request structure */
@@ -61,6 +118,10 @@ static void winbindd_init_request(struct winbindd_request *request,
 	request->cmd = (enum winbindd_cmd)request_type;
 	request->pid = getpid();
 
+	(void)snprintf(request->client_name,
+		       sizeof(request->client_name),
+		       "%s",
+		       winbind_get_client_name());
 }
 
 /* Initialise a response structure */
@@ -88,12 +149,16 @@ static void winbind_close_sock(struct winbindd_context *ctx)
 
 /* Destructor for global context to ensure fd is closed */
 
-#if HAVE_DESTRUCTOR_ATTRIBUTE
+#ifdef HAVE_DESTRUCTOR_ATTRIBUTE
 __attribute__((destructor))
 #endif
 static void winbind_destructor(void)
 {
-	winbind_close_sock(&wb_global_ctx);
+	struct winbindd_context *ctx;
+
+	ctx = get_wb_global_ctx();
+	winbind_close_sock(ctx);
+	put_wb_global_ctx();
 }
 
 #define CONNECT_TIMEOUT 30
@@ -725,16 +790,23 @@ NSS_STATUS winbindd_request_response(struct winbindd_context *ctx,
 				     struct winbindd_response *response)
 {
 	NSS_STATUS status = NSS_STATUS_UNAVAIL;
+	bool release_global_ctx = false;
 
 	if (ctx == NULL) {
-		ctx = &wb_global_ctx;
+		ctx = get_wb_global_ctx();
+		release_global_ctx = true;
 	}
 
 	status = winbindd_send_request(ctx, req_type, 0, request);
-	if (status != NSS_STATUS_SUCCESS)
-		return (status);
+	if (status != NSS_STATUS_SUCCESS) {
+		goto out;
+	}
 	status = winbindd_get_response(ctx, response);
 
+out:
+	if (release_global_ctx) {
+		put_wb_global_ctx();
+	}
 	return status;
 }
 
@@ -744,16 +816,23 @@ NSS_STATUS winbindd_priv_request_response(struct winbindd_context *ctx,
 					  struct winbindd_response *response)
 {
 	NSS_STATUS status = NSS_STATUS_UNAVAIL;
+	bool release_global_ctx = false;
 
 	if (ctx == NULL) {
-		ctx = &wb_global_ctx;
+		ctx = get_wb_global_ctx();
+		release_global_ctx = true;
 	}
 
 	status = winbindd_send_request(ctx, req_type, 1, request);
-	if (status != NSS_STATUS_SUCCESS)
-		return (status);
+	if (status != NSS_STATUS_SUCCESS) {
+		goto out;
+	}
 	status = winbindd_get_response(ctx, response);
 
+out:
+	if (release_global_ctx) {
+		put_wb_global_ctx();
+	}
 	return status;
 }
 

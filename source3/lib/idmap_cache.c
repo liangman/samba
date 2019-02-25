@@ -21,6 +21,7 @@
 #include "idmap_cache.h"
 #include "../libcli/security/security.h"
 #include "../librpc/gen_ndr/idmap.h"
+#include "lib/gencache.h"
 
 /**
  * Find a sid2xid mapping
@@ -35,7 +36,7 @@
 bool idmap_cache_find_sid2unixid(const struct dom_sid *sid, struct unixid *id,
 				 bool *expired)
 {
-	fstring sidstr;
+	struct dom_sid_buf sidstr;
 	char *key;
 	char *value = NULL;
 	char *endptr;
@@ -44,7 +45,7 @@ bool idmap_cache_find_sid2unixid(const struct dom_sid *sid, struct unixid *id,
 	struct unixid tmp_id;
 
 	key = talloc_asprintf(talloc_tos(), "IDMAP/SID2XID/%s",
-			      sid_to_fstring(sidstr, sid));
+			      dom_sid_str_buf(sid, &sidstr));
 	if (key == NULL) {
 		return false;
 	}
@@ -288,11 +289,12 @@ void idmap_cache_set_sid2unixid(const struct dom_sid *sid, struct unixid *unix_i
 {
 	time_t now = time(NULL);
 	time_t timeout;
-	fstring sidstr, key, value;
+	fstring key, value;
 
 	if (!is_null_sid(sid)) {
+		struct dom_sid_buf sidstr;
 		fstr_sprintf(key, "IDMAP/SID2XID/%s",
-			     sid_to_fstring(sidstr, sid));
+			     dom_sid_str_buf(sid, &sidstr));
 		switch (unix_id->type) {
 		case ID_TYPE_UID:
 			fstr_sprintf(value, "%d:U", (int)unix_id->id);
@@ -412,6 +414,7 @@ bool idmap_cache_del_sid(const struct dom_sid *sid)
 	bool ret = true;
 	bool expired;
 	struct unixid id;
+	struct dom_sid_buf sidbuf;
 	const char *sid_key;
 
 	if (!idmap_cache_find_sid2unixid(sid, &id, &expired)) {
@@ -436,7 +439,7 @@ bool idmap_cache_del_sid(const struct dom_sid *sid)
 		}
 	}
 
-	sid_key = key_sid2xid_str(mem_ctx, dom_sid_string(mem_ctx, sid));
+	sid_key = key_sid2xid_str(mem_ctx, dom_sid_str_buf(sid, &sidbuf));
 	if (sid_key == NULL) {
 		return false;
 	}

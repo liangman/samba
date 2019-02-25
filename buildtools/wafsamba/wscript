@@ -115,9 +115,6 @@ def options(opt):
     gr.add_option('--enable-gccdeps',
                    help=("Enable use of gcc -MD dependency module"),
                    action="store_true", dest='enable_gccdeps', default=True)
-    gr.add_option('--timestamp-dependencies',
-                   help=("use file timestamps instead of content for build dependencies (BROKEN)"),
-                   action="store_true", dest='timestamp_dependencies', default=False)
     gr.add_option('--pedantic',
 		   help=("Enable even more compiler warnings"),
 		   action='store_true', dest='pedantic', default=False)
@@ -220,9 +217,6 @@ def configure(conf):
 
     conf.define('SRCDIR', conf.env['srcdir'])
 
-    if Options.options.timestamp_dependencies:
-        conf.ENABLE_TIMESTAMP_DEPENDENCIES()
-
     conf.SETUP_CONFIGURE_CACHE(Options.options.enable_configure_cache)
 
     # load our local waf extensions
@@ -231,7 +225,7 @@ def configure(conf):
 
     conf.CHECK_CC_ENV()
 
-    conf.load('compiler_cc')
+    conf.load('compiler_c')
 
     conf.CHECK_STANDARD_LIBPATH()
 
@@ -314,15 +308,16 @@ def configure(conf):
               "-qhalt=w",     # IBM xlc
               "-w2",           # Tru64
              ]:
-        if conf.CHECK_CFLAGS([f], '''
-'''):
+        if conf.CHECK_CFLAGS([f]):
             if not 'WERROR_CFLAGS' in conf.env:
                 conf.env['WERROR_CFLAGS'] = []
             conf.env['WERROR_CFLAGS'].extend([f])
             break
 
     # check which compiler/linker flags are needed for rpath support
-    if not conf.CHECK_LDFLAGS(['-Wl,-rpath,.']) and conf.CHECK_LDFLAGS(['-Wl,-R,.']):
+    if conf.CHECK_LDFLAGS(['-Wl,-rpath,.']):
+        conf.env['RPATH_ST'] = '-Wl,-rpath,%s'
+    elif conf.CHECK_LDFLAGS(['-Wl,-R,.']):
         conf.env['RPATH_ST'] = '-Wl,-R,%s'
 
     # check for rpath
@@ -354,10 +349,10 @@ def configure(conf):
     else:
         conf.env.HAVE_LD_VERSION_SCRIPT = False
 
-    if conf.CHECK_CFLAGS(['-fvisibility=hidden'] + conf.env.WERROR_CFLAGS):
+    if conf.CHECK_CFLAGS(['-fvisibility=hidden']):
         conf.env.VISIBILITY_CFLAGS = '-fvisibility=hidden'
         conf.CHECK_CODE('''int main(void) { return 0; }
-                           __attribute__((visibility("default"))) void vis_foo2(void) {}''',
+                           __attribute__((visibility("default"))) void vis_foo2(void) {}\n''',
                         cflags=conf.env.VISIBILITY_CFLAGS,
                         strict=True,
                         define='HAVE_VISIBILITY_ATTR', addmain=False)
@@ -450,6 +445,15 @@ def configure(conf):
     conf.DEFINE('_GNU_SOURCE', 1, add_to_cflags=True)
     conf.DEFINE('_XOPEN_SOURCE_EXTENDED', 1, add_to_cflags=True)
 
+    #
+    # Needs to be defined before std*.h and string*.h are included
+    # As Python.h already brings string.h we need it in CFLAGS.
+    # See memset_s() details here:
+    # https://en.cppreference.com/w/c/string/byte/memset
+    #
+    if conf.CHECK_CFLAGS(['-D__STDC_WANT_LIB_EXT1__=1']):
+        conf.ADD_CFLAGS('-D__STDC_WANT_LIB_EXT1__=1')
+
     # on Tru64 certain features are only available with _OSF_SOURCE set to 1
     # and _XOPEN_SOURCE set to 600
     if conf.env['SYSTEM_UNAME_SYSNAME'] == 'OSF1':
@@ -518,7 +522,7 @@ struct foo bar = { .y = 'X', .x = 1 };
                         #if !defined(LITTLE) || !defined(B) || LITTLE != B
                         #error Not little endian.
                         #endif
-                        int main(void) { return 0; }""",
+                        int main(void) { return 0; }\n""",
                             addmain=False,
                             headers="endian.h sys/endian.h",
                             define="HAVE_LITTLE_ENDIAN")
@@ -537,7 +541,7 @@ struct foo bar = { .y = 'X', .x = 1 };
                         #if !defined(BIG) || !defined(B) || BIG != B
                         #error Not big endian.
                         #endif
-                        int main(void) { return 0; }""",
+                        int main(void) { return 0; }\n""",
                             addmain=False,
                             headers="endian.h sys/endian.h",
                             define="HAVE_BIG_ENDIAN")
@@ -598,7 +602,6 @@ def build(bld):
         Logs.error('bld.path %s is not a child of %s' % (curdir, srcdir))
         raise Errors.WafError('''The top source directory has moved. Please run distclean and reconfigure''')
 
-    bld.CHECK_MAKEFLAGS()
     bld.SETUP_BUILD_GROUPS()
     bld.ENFORCE_GROUP_ORDERING()
     bld.CHECK_PROJECT_RULES()

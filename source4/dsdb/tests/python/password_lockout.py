@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This tests the password lockout behavior for AD implementations
 #
@@ -151,11 +151,11 @@ userAccountControl: %d
 """ % uac)
 
     def _reset_by_method(self, res, method):
-        if method is "ldap_userAccountControl":
+        if method == "ldap_userAccountControl":
             self._reset_ldap_userAccountControl(res)
-        elif method is "ldap_lockoutTime":
+        elif method == "ldap_lockoutTime":
             self._reset_ldap_lockoutTime(res)
-        elif method is "samr":
+        elif method == "samr":
             self._reset_samr(res)
         else:
             self.assertTrue(False, msg="Invalid reset method[%s]" % method)
@@ -662,7 +662,7 @@ userPassword: thatsAcomplPASS2XYZ
 
         # prove we can change the user password (using the correct password)
         new_password = "thatsAcomplPASS2"
-        net.change_password(newpassword=new_password.encode('utf-8'),
+        net.change_password(newpassword=new_password,
                             username=username,
                             oldpassword=creds.get_password())
         creds.set_password(new_password)
@@ -673,12 +673,12 @@ userPassword: thatsAcomplPASS2XYZ
             badPwdCount = i + 1
             try:
                 print("Trying bad password, attempt #%u" % badPwdCount)
-                net.change_password(newpassword=new_password.encode('utf-8'),
+                net.change_password(newpassword=new_password,
                                     username=creds.get_username(),
                                     oldpassword="bad-password")
                 self.fail("Invalid SAMR change_password accepted")
             except NTSTATUSError as e:
-                enum = ctypes.c_uint32(e[0]).value
+                enum = ctypes.c_uint32(e.args[0]).value
                 self.assertEquals(enum, ntstatus.NT_STATUS_WRONG_PASSWORD)
 
             # check the status of the account is updated after each bad attempt
@@ -707,12 +707,12 @@ userPassword: thatsAcomplPASS2XYZ
         for password in (creds.get_password(), "bad-password"):
             try:
                 print("Trying password %s" % password)
-                net.change_password(newpassword=new_password.encode('utf-8'),
+                net.change_password(newpassword=new_password,
                                     username=creds.get_username(),
                                     oldpassword=password)
                 self.fail("Invalid SAMR change_password accepted")
             except NTSTATUSError as e:
-                enum = ctypes.c_uint32(e[0]).value
+                enum = ctypes.c_uint32(e.args[0]).value
                 self.assertEquals(enum, ntstatus.NT_STATUS_ACCOUNT_LOCKED_OUT)
 
             res = self._check_account(userdn,
@@ -740,7 +740,7 @@ userPassword: thatsAcomplPASS2XYZ
                                   msDSUserAccountControlComputed=0)
 
         # check we can change the user password successfully now
-        net.change_password(newpassword=new_password.encode('utf-8'),
+        net.change_password(newpassword=new_password,
                             username=username,
                             oldpassword=creds.get_password())
         creds.set_password(new_password)
@@ -1371,6 +1371,36 @@ userPassword: """ + userpass + """
         self._testing_add_user(lockout4ntlm_creds,
                                lockOutObservationWindow=self.lockout_observation_window)
 
+class PasswordTestsWithDefaults(PasswordTests):
+    def setUp(self):
+        # The tests in this class do not sleep, so we can use the default
+        # timeout windows here
+        self.account_lockout_duration = 30 * 60
+        self.lockout_observation_window = 30 * 60
+        super(PasswordTestsWithDefaults, self).setUp()
+
+    # sanity-check that user lockout works with the default settings (we just
+    # check the user is locked out - we don't wait for the lockout to expire)
+    def test_login_lockout_krb5(self):
+        self._test_login_lockout(self.lockout1krb5_creds,
+                                 wait_lockout_duration=False)
+
+    def test_login_lockout_ntlm(self):
+        self._test_login_lockout(self.lockout1ntlm_creds,
+                                 wait_lockout_duration=False)
+
+    # Repeat the login lockout tests using PSOs
+    def test_pso_login_lockout_krb5(self):
+        """Check the PSO lockout settings get applied to the user correctly"""
+        self.use_pso_lockout_settings(self.lockout1krb5_creds)
+        self._test_login_lockout(self.lockout1krb5_creds,
+                                 wait_lockout_duration=False)
+
+    def test_pso_login_lockout_ntlm(self):
+        """Check the PSO lockout settings get applied to the user correctly"""
+        self.use_pso_lockout_settings(self.lockout1ntlm_creds)
+        self._test_login_lockout(self.lockout1ntlm_creds,
+                                 wait_lockout_duration=False)
 
 host_url = "ldap://%s" % host
 

@@ -167,8 +167,10 @@ NTSTATUS _wbint_Sids2UnixIDs(struct pipes_struct *p,
 
 	dom = idmap_find_domain_with_sid(d->name.string, d->sid);
 	if (dom == NULL) {
+		struct dom_sid_buf buf;
 		DEBUG(10, ("idmap domain %s:%s not found\n",
-			   d->name.string, sid_string_dbg(d->sid)));
+			   d->name.string,
+			   dom_sid_str_buf(d->sid, &buf)));
 
 		for (i=0; i<num_ids; i++) {
 
@@ -201,6 +203,15 @@ NTSTATUS _wbint_Sids2UnixIDs(struct pipes_struct *p,
 	}
 
 	status = dom->methods->sids_to_unixids(dom, id_map_ptrs);
+
+	if (NT_STATUS_EQUAL(status, STATUS_SOME_UNMAPPED)) {
+		/*
+		 * This is okay. We need to transfer the mapped ones
+		 * up to our caller. The individual mappings carry the
+		 * information whether they are mapped or not.
+		 */
+		status = NT_STATUS_OK;
+	}
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(10, ("sids_to_unixids returned %s\n",
@@ -990,8 +1001,13 @@ NTSTATUS _winbind_SamLogon(struct pipes_struct *p,
 				       identity_info->account_name.string,
 				       identity_info->domain_name.string,
 				       identity_info->workstation.string,
+				       identity_info->logon_id,
+				       "SamLogon",
+				       0,
 				       challenge,
 				       lm_response, nt_response,
+				       p->remote_address,
+				       p->local_address,
 				       &r->out.authoritative,
 				       true, /* skip_sam */
 				       &flags,

@@ -24,6 +24,8 @@
 #include "system/filesys.h"
 #include <talloc.h>
 #include "lib/util/samba_util.h"
+#include "lib/util/sys_popen.h"
+#include "lib/util/sys_rw.h"
 #include "lib/util/debug.h"
 
 /**
@@ -220,7 +222,7 @@ parse a buffer into lines
 **/
 char **file_lines_parse(char *p, size_t size, int *numlines, TALLOC_CTX *mem_ctx)
 {
-	int i;
+	unsigned int i;
 	char *s, **ret;
 
 	if (!p) return NULL;
@@ -238,11 +240,11 @@ char **file_lines_parse(char *p, size_t size, int *numlines, TALLOC_CTX *mem_ctx
 	talloc_steal(ret, p);
 
 	ret[0] = p;
-	for (s = p, i=0; s < p+size; s++) {
+	for (s = p, i=1; s < p+size; s++) {
 		if (s[0] == '\n') {
 			s[0] = 0;
-			i++;
 			ret[i] = s+1;
+			i++;
 		}
 		if (s[0] == '\r') s[0] = 0;
 	}
@@ -361,4 +363,50 @@ bool file_compare(const char *path1, const char *path2)
 	}
 	talloc_free(mem_ctx);
 	return true;
+}
+
+
+/**
+ Load from a pipe into memory.
+**/
+char *file_pload(const char *syscmd, size_t *size)
+{
+	int fd, n;
+	char *p;
+	char buf[1024];
+	size_t total;
+
+	fd = sys_popen(syscmd);
+	if (fd == -1) {
+		return NULL;
+	}
+
+	p = NULL;
+	total = 0;
+
+	while ((n = sys_read(fd, buf, sizeof(buf))) > 0) {
+		p = talloc_realloc(NULL, p, char, total + n + 1);
+		if (!p) {
+		        DEBUG(0,("file_pload: failed to expand buffer!\n"));
+			close(fd);
+			return NULL;
+		}
+		memcpy(p+total, buf, n);
+		total += n;
+	}
+
+	if (p) {
+		p[total] = 0;
+	}
+
+	/* FIXME: Perhaps ought to check that the command completed
+	 * successfully (returned 0); if not the data may be
+	 * truncated. */
+	sys_pclose(fd);
+
+	if (size) {
+		*size = total;
+	}
+
+	return p;
 }

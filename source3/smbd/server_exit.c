@@ -48,6 +48,7 @@
 #include "../lib/util/pidfile.h"
 #include "smbprofile.h"
 #include "libcli/auth/netlogon_creds_cli.h"
+#include "lib/gencache.h"
 
 static struct files_struct *log_writeable_file_fn(
 	struct files_struct *fsp, void *private_data)
@@ -236,7 +237,6 @@ static void exit_server_common(enum server_exit_reason how,
 		if (am_parent) {
 			pidfile_unlink(lp_pid_directory(), "smbd");
 		}
-		gencache_stabilize();
 	}
 
 	exit(0);

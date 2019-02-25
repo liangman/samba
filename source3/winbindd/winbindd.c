@@ -46,6 +46,7 @@
 #include "libcli/auth/netlogon_creds_cli.h"
 #include "passdb.h"
 #include "lib/util/tevent_req_profile.h"
+#include "lib/gencache.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
@@ -206,8 +207,6 @@ static void terminate(bool is_parent)
 	}
 
 	idmap_close();
-
-	gencache_stabilize();
 
 	netlogon_creds_cli_close_global_db();
 
@@ -709,6 +708,9 @@ static struct tevent_req *process_request_send(
 
 	/* Remember who asked us. */
 	cli_state->pid = cli_state->request->pid;
+	memcpy(cli_state->client_name,
+	       cli_state->request->client_name,
+	       sizeof(cli_state->client_name));
 
 	cli_state->cmd_name = "unknown request";
 	cli_state->recv_fn = NULL;
@@ -735,8 +737,11 @@ static struct tevent_req *process_request_send(
 		cli_state->cmd_name = atable->cmd_name;
 		cli_state->recv_fn = atable->recv_req;
 
-		DEBUG(10, ("process_request: Handling async request %d:%s\n",
-			   (int)cli_state->pid, cli_state->cmd_name));
+		DBG_DEBUG("process_request: "
+			  "Handling async request %s(%d):%s\n",
+			  cli_state->client_name,
+			  (int)cli_state->pid,
+			  cli_state->cmd_name);
 
 		subreq = atable->send_req(
 			state,
@@ -798,7 +803,8 @@ static void process_request_done(struct tevent_req *subreq)
 	status = cli_state->recv_fn(subreq, cli_state->response);
 	TALLOC_FREE(subreq);
 
-	DBG_DEBUG("[%d:%s]: %s\n",
+	DBG_DEBUG("[%s(%d):%s]: %s\n",
+		  cli_state->client_name,
 		  (int)cli_state->pid,
 		  cli_state->cmd_name,
 		  nt_errstr(status));
@@ -842,8 +848,10 @@ static void process_request_written(struct tevent_req *subreq)
 		return;
 	}
 
-	DBG_DEBUG("[%d:%s]: delivered response to client\n",
-		  (int)cli_state->pid, cli_state->cmd_name);
+	DBG_DEBUG("[%s(%d):%s]: delivered response to client\n",
+		  cli_state->client_name,
+		  (int)cli_state->pid,
+		  cli_state->cmd_name);
 
 	TALLOC_FREE(cli_state->mem_ctx);
 	cli_state->response = NULL;
@@ -1057,7 +1065,8 @@ static void winbind_client_processed(struct tevent_req *req)
 		DBG_ERR("request took %u.%.6u seconds\n",
 			(unsigned)diff.tv_sec, (unsigned)diff.tv_usec);
 
-		str = tevent_req_profile_string(profile, talloc_tos(), 0, depth);
+		str = tevent_req_profile_string(
+			talloc_tos(), profile, 0, depth);
 		if (str != NULL) {
 			/* No "\n", already contained in "str" */
 			DEBUGADD(0, ("%s", str));
@@ -1588,12 +1597,54 @@ int main(int argc, const char **argv)
 	};
 	struct poptOption long_options[] = {
 		POPT_AUTOHELP
-		{ "stdout", 'S', POPT_ARG_NONE, NULL, OPT_LOG_STDOUT, "Log to stdout" },
-		{ "foreground", 'F', POPT_ARG_NONE, NULL, OPT_FORK, "Daemon in foreground mode" },
-		{ "no-process-group", 0, POPT_ARG_NONE, NULL, OPT_NO_PROCESS_GROUP, "Don't create a new process group" },
-		{ "daemon", 'D', POPT_ARG_NONE, NULL, OPT_DAEMON, "Become a daemon (default)" },
-		{ "interactive", 'i', POPT_ARG_NONE, NULL, 'i', "Interactive mode" },
-		{ "no-caching", 'n', POPT_ARG_NONE, NULL, 'n', "Disable caching" },
+		{
+			.longName   = "stdout",
+			.shortName  = 'S',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_LOG_STDOUT,
+			.descrip    = "Log to stdout",
+		},
+		{
+			.longName   = "foreground",
+			.shortName  = 'F',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_FORK,
+			.descrip    = "Daemon in foreground mode",
+		},
+		{
+			.longName   = "no-process-group",
+			.shortName  = 0,
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_NO_PROCESS_GROUP,
+			.descrip    = "Don't create a new process group",
+		},
+		{
+			.longName   = "daemon",
+			.shortName  = 'D',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = OPT_DAEMON,
+			.descrip    = "Become a daemon (default)",
+		},
+		{
+			.longName   = "interactive",
+			.shortName  = 'i',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'i',
+			.descrip    = "Interactive mode",
+		},
+		{
+			.longName   = "no-caching",
+			.shortName  = 'n',
+			.argInfo    = POPT_ARG_NONE,
+			.arg        = NULL,
+			.val        = 'n',
+			.descrip    = "Disable caching",
+		},
 		POPT_COMMON_SAMBA
 		POPT_TABLEEND
 	};
@@ -1823,7 +1874,7 @@ int main(int argc, const char **argv)
 
 	pidfile_create(lp_pid_directory(), "winbindd");
 
-#if HAVE_SETPGID
+#ifdef HAVE_SETPGID
 	/*
 	 * If we're interactive we want to set our own process group for
 	 * signal management.
@@ -1845,7 +1896,13 @@ int main(int argc, const char **argv)
 	if (!NT_STATUS_IS_OK(status)) {
 		exit_daemon("Winbindd reinit_after_fork() failed", map_errno_from_nt_status(status));
 	}
-	initialize_password_db(true, global_event_context());
+
+	ok = initialize_password_db(true, global_event_context());
+	if (!ok) {
+		exit_daemon("Failed to initialize passdb backend! "
+			    "Check the 'passdb backend' variable in your "
+			    "smb.conf file.", EINVAL);
+	}
 
 	/*
 	 * Do not initialize the parent-child-pipe before becoming

@@ -822,7 +822,11 @@ NTSTATUS cli_read_recv(struct tevent_req *req, size_t *received)
 	return NT_STATUS_OK;
 }
 
-static NTSTATUS cli_read_sink(char *buf, size_t n, void *priv)
+/*
+ * Helper function for cli_pull(). This takes a chunk of data (buf) read from
+ * a remote file and copies it into the return buffer (priv).
+ */
+NTSTATUS cli_read_sink(char *buf, size_t n, void *priv)
 {
 	char **pbuf = (char **)priv;
 	memcpy(*pbuf, buf, n);
@@ -1062,6 +1066,130 @@ NTSTATUS cli_write_andx_recv(struct tevent_req *req, size_t *pwritten)
 	if (pwritten != 0) {
 		*pwritten = state->written;
 	}
+	return NT_STATUS_OK;
+}
+
+struct cli_write_state {
+	struct cli_state *cli;
+	size_t written;
+};
+
+static void cli_write_done(struct tevent_req *subreq);
+
+/*
+ * Used to write to a file remotely.
+ * This is similar in functionality to cli_push_send(), except this is a more
+ * finer-grain API. For example, if the data we want to write exceeds the max
+ * write size of the underlying connection, then it's the caller's
+ * responsibility to handle this.
+ * For writing a small amount of data to file, this is a simpler API to use.
+ */
+struct tevent_req *cli_write_send(TALLOC_CTX *mem_ctx,
+				  struct tevent_context *ev,
+				  struct cli_state *cli, uint16_t fnum,
+				  uint16_t mode, const uint8_t *buf,
+				  off_t offset, size_t size)
+{
+	struct tevent_req *req = NULL;
+	struct cli_write_state *state = NULL;
+	struct tevent_req *subreq = NULL;
+
+	req = tevent_req_create(mem_ctx, &state, struct cli_write_state);
+	if (req == NULL) {
+		return NULL;
+	}
+	state->cli = cli;
+
+	if (smbXcli_conn_protocol(cli->conn) >= PROTOCOL_SMB2_02) {
+		uint32_t max_size;
+		bool ok;
+
+		ok = smb2cli_conn_req_possible(state->cli->conn, &max_size);
+		if (!ok) {
+			tevent_req_nterror(
+				req,
+				NT_STATUS_INSUFFICIENT_RESOURCES);
+			return tevent_req_post(req, ev);
+		}
+
+		/*
+		 * downgrade depending on the available credits
+		 */
+		size = MIN(max_size, size);
+
+		subreq = cli_smb2_write_send(state,
+					     ev,
+					     cli,
+					     fnum,
+					     mode,
+					     buf,
+					     offset,
+					     size);
+	} else {
+		bool ok;
+
+		ok = smb1cli_conn_req_possible(state->cli->conn);
+		if (!ok) {
+			tevent_req_nterror(
+				req,
+				NT_STATUS_INSUFFICIENT_RESOURCES);
+			return tevent_req_post(req, ev);
+		}
+
+		subreq = cli_write_andx_send(state,
+					     ev,
+					     cli,
+					     fnum,
+					     mode,
+					     buf,
+					     offset,
+					     size);
+	}
+	if (tevent_req_nomem(subreq, req)) {
+		return tevent_req_post(req, ev);
+	}
+	tevent_req_set_callback(subreq, cli_write_done, req);
+
+	return req;
+}
+
+static void cli_write_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req =
+		tevent_req_callback_data(subreq,
+		struct tevent_req);
+	struct cli_write_state *state =
+		tevent_req_data(req,
+		struct cli_write_state);
+	NTSTATUS status;
+
+	if (smbXcli_conn_protocol(state->cli->conn) >= PROTOCOL_SMB2_02) {
+		status = cli_smb2_write_recv(subreq, &state->written);
+	} else {
+		status = cli_write_andx_recv(subreq, &state->written);
+	}
+	TALLOC_FREE(subreq);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+	tevent_req_done(req);
+}
+
+NTSTATUS cli_write_recv(struct tevent_req *req, size_t *pwritten)
+{
+	struct cli_write_state *state =
+		tevent_req_data(req,
+		struct cli_write_state);
+	NTSTATUS status;
+
+	if (tevent_req_is_nterror(req, &status)) {
+		tevent_req_received(req);
+		return status;
+	}
+	if (pwritten != NULL) {
+		*pwritten = state->written;
+	}
+	tevent_req_received(req);
 	return NT_STATUS_OK;
 }
 
@@ -1339,6 +1467,16 @@ static void cli_push_setup_chunks(struct tevent_req *req);
 static void cli_push_chunk_ship(struct cli_push_chunk *chunk);
 static void cli_push_chunk_done(struct tevent_req *subreq);
 
+/*
+ * Used to write to a file remotely.
+ * This is similar in functionality to cli_write_send(), except this API
+ * handles writing a large file by breaking the data into chunks (so we don't
+ * exceed the max write size of the underlying connection). To do this, the
+ * (*source) callback handles copying the underlying file data into a message
+ * buffer, one chunk at a time.
+ * This API is recommended when writing a potentially large amount of data,
+ * e.g. when copying a file (or doing a 'put').
+ */
 struct tevent_req *cli_push_send(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
 				 struct cli_state *cli,
 				 uint16_t fnum, uint16_t mode,
